@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Velox | Full Trip Flow</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary-purple: #4b2c6d;
+            --dark-purple: #2d1b42;
+            --accent-purple: #8e44ad;
+            --bg-light: #f8f9fa;
+        }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-light);
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+        }
+        .btn-purple { background-color: var(--primary-purple); color: white; transition: all 0.3s ease; }
+        .btn-purple:active { transform: scale(0.98); background-color: var(--dark-purple); }
+        .glass-panel { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); border-top: 1px solid rgba(0,0,0,0.05); }
+        .map-placeholder {
+            background: #e5e7eb;
+            background-image: linear-gradient(rgba(75, 44, 109, 0.05) 2px, transparent 2px), linear-gradient(90deg, rgba(75, 44, 109, 0.05) 2px, transparent 2px);
+            background-size: 40px 40px;
+            position: relative;
+            flex-grow: 1;
+        }
+        .screen-container { display: none; height: 100%; width: 100%; position: absolute; top: 0; left: 0; flex-direction: column; }
+        .screen-active { display: flex; animation: fadeIn 0.3s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .pulse-ring {
+            position: absolute; width: 100px; height: 100px; border-radius: 50%;
+            background: rgba(75, 44, 109, 0.2); animation: pulse 2s infinite;
+        }
+        @keyframes pulse { 0% { transform: scale(0.5); opacity: 1; } 100% { transform: scale(2.5); opacity: 0; } }
+    </style>
+</head>
+<body>
+
+    <!-- SCREEN: WELCOME -->
+    <div id="screen-welcome" class="screen-container screen-active bg-white items-center justify-center p-8">
+        <div class="mb-12 text-center">
+            <div class="w-24 h-24 bg-[#4b2c6d] rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl">
+                <i class="fas fa-bolt text-4xl text-white"></i>
+            </div>
+            <h1 class="text-4xl font-bold text-gray-900 mb-2 italic">VELOX</h1>
+            <p class="text-gray-500 font-medium">Professional Mobility Redefined</p>
+        </div>
+        <div class="w-full space-y-4 max-w-md">
+            <button onclick="setRole('rider')" class="w-full py-4 btn-purple rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-3">
+                <i class="fas fa-user"></i> As Rider
+            </button>
+            <button onclick="setRole('driver')" class="w-full py-4 border-2 border-[#4b2c6d] text-[#4b2c6d] bg-white rounded-xl font-bold text-lg shadow-sm flex items-center justify-center gap-3">
+                <i class="fas fa-car"></i> As Driver
+            </button>
+        </div>
+    </div>
+
+    <!-- SCREEN: LOGIN & OTP (Consolidated for Demo) -->
+    <div id="screen-login" class="screen-container bg-white p-6">
+        <button onclick="navigate('welcome')" class="mb-8 text-xl text-gray-700"><i class="fas fa-arrow-left"></i></button>
+        <h2 class="text-2xl font-bold text-gray-900 mb-2">Welcome Back</h2>
+        <p class="text-gray-500 mb-8">Enter your credentials to continue.</p>
+        <input type="tel" placeholder="Phone Number" class="w-full text-xl border-b-2 py-3 mb-8 outline-none focus:border-[#4b2c6d]">
+        <button onclick="loginSuccess()" class="w-full py-4 btn-purple rounded-xl font-bold text-lg">Login</button>
+    </div>
+
+    <!-- RIDER FLOW -->
+
+    <!-- SCREEN: RIDER HOME -->
+    <div id="screen-rider-home" class="screen-container bg-white">
+        <div class="map-placeholder">
+            <div class="absolute top-4 left-4 right-4 flex justify-between">
+                <button onclick="toggleMenu()" class="w-12 h-12 bg-white rounded-full shadow-lg flex items-center justify-center"><i class="fas fa-bars"></i></button>
+            </div>
+            <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"><i class="fas fa-map-marker-alt text-[#4b2c6d] text-3xl"></i></div>
+        </div>
+        <div class="glass-panel p-6 rounded-t-3xl shadow-2xl z-10">
+            <h3 class="text-xl font-bold text-gray-800 mb-4">Where to?</h3>
+            <div onclick="navigate('ride-search')" class="bg-gray-100 p-4 rounded-xl flex items-center gap-4 cursor-pointer">
+                <i class="fas fa-search text-gray-400"></i>
+                <span class="text-gray-500">Destination...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- SCREEN: RIDE SEARCH & SELECTION -->
+    <div id="screen-ride-search" class="screen-container bg-white">
+        <div class="p-6 border-b">
+            <button onclick="navigate('rider-home')" class="mb-4"><i class="fas fa-arrow-left"></i></button>
+            <div class="space-y-3">
+                <div class="flex items-center gap-3 bg-gray-50 p-3 rounded-lg"><div class="w-2 h-2 bg-blue-500 rounded-full"></div><span class="text-sm font-medium">Current Location</span></div>
+                <div class="flex items-center gap-3 bg-gray-50 p-3 rounded-lg border-2 border-[#4b2c6d]"><div class="w-2 h-2 bg-red-500 rounded-sm"></div><span class="text-sm font-bold">Downtown Center</span></div>
+            </div>
+        </div>
+        <div class="p-6 flex-grow overflow-y-auto">
+            <h4 class="text-xs font-black text-gray-400 uppercase tracking-widest mb-4">Available Rides</h4>
+            <div class="space-y-3">
+                <div onclick="selectRide('Velox X', '$12.50')" class="flex items-center justify-between p-4 border-2 border-gray-100 rounded-2xl hover:border-[#4b2c6d] cursor-pointer">
+                    <div class="flex items-center gap-4">
+                        <i class="fas fa-car text-2xl text-gray-700"></i>
+                        <div><div class="font-bold">Velox X</div><div class="text-xs text-gray-400">4 mins away</div></div>
+                    </div>
+                    <div class="font-bold text-[#4b2c6d]">$12.50</div>
+                </div>
+                <div onclick="selectRide('Velox XL', '$18.20')" class="flex items-center justify-between p-4 border-2 border-gray-100 rounded-2xl hover:border-[#4b2c6d] cursor-pointer">
+                    <div class="flex items-center gap-4">
+                        <i class="fas fa-truck-pickup text-2xl text-gray-700"></i>
+                        <div><div class="font-bold">Velox XL</div><div class="text-xs text-gray-400">7 mins away</div></div>
+                    </div>
+                    <div class="font-bold text-[#4b2c6d]">$18.20</div>
+                </div>
+            </div>
+        </div>
+        <div class="p-6 border-t"><button onclick="requestRide()" class="w-full py-4 btn-purple rounded-xl font-bold shadow-lg">Confirm Velox</button></div>
+    </div>
+
+    <!-- SCREEN: MATCHING & WAITING -->
+    <div id="screen-matching" class="screen-container bg-white items-center justify-center p-8">
+        <div class="relative mb-12 flex items-center justify-center">
+            <div class="pulse-ring"></div>
+            <div class="w-20 h-20 bg-[#4b2c6d] rounded-full flex items-center justify-center z-10 shadow-xl">
+                <i class="fas fa-car text-white text-3xl"></i>
+            </div>
+        </div>
+        <h2 class="text-2xl font-bold mb-2">Connecting to Driver...</h2>
+        <p class="text-gray-500 text-center mb-10">We're finding the best professional for your trip to Downtown Center.</p>
+        <button onclick="cancelRide()" class="w-full py-4 bg-gray-100 text-gray-500 rounded-xl font-bold">Cancel Request</button>
+    </div>
+
+    <!-- SCREEN: RIDER TRIP ACTIVE -->
+    <div id="screen-rider-active" class="screen-container bg-white">
+        <div class="map-placeholder">
+            <div class="absolute top-4 left-4 bg-[#4b2c6d] text-white px-4 py-2 rounded-full text-xs font-bold" id="rider-status-tag">Driver Arriving</div>
+        </div>
+        <div class="glass-panel p-6 rounded-t-3xl shadow-2xl z-10">
+            <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center gap-4">
+                    <img src="https://ui-avatars.com/api/?name=John+Driver&background=4b2c6d&color=fff" class="w-12 h-12 rounded-full">
+                    <div><div class="font-bold" id="active-driver-name">John D.</div><div class="text-xs text-gray-400">Toyota Camry • ABC-1234</div></div>
+                </div>
+                <div class="flex gap-2">
+                    <button class="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center text-[#4b2c6d]"><i class="fas fa-phone"></i></button>
+                    <button class="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center text-[#4b2c6d]"><i class="fas fa-comment"></i></button>
+                </div>
+            </div>
+            <div class="h-1 bg-gray-100 rounded-full overflow-hidden mb-4"><div id="trip-progress" class="h-full bg-[#4b2c6d] transition-all duration-[5000ms]" style="width: 0%"></div></div>
+            <div class="flex justify-between text-xs font-bold text-gray-400"><span>PICKUP</span><span id="eta-text">ETA: 3 mins</span><span>DESTINATION</span></div>
+        </div>
+    </div>
+
+    <!-- SCREEN: RATING (Universal) -->
+    <div id="screen-rating" class="screen-container bg-white p-8 items-center justify-center text-center">
+        <div class="w-24 h-24 bg-green-100 text-green-600 rounded-full flex items-center justify-center mb-6 text-4xl">
+            <i class="fas fa-check-circle"></i>
+        </div>
+        <h2 class="text-2xl font-bold mb-2">Trip Completed!</h2>
+        <p class="text-gray-500 mb-8" id="rating-subtitle">How was your experience with Alex?</p>
+        <div class="flex gap-3 mb-10 text-3xl text-gray-200">
+            <i class="fas fa-star cursor-pointer hover:text-yellow-400 transition-colors" onclick="setStars(1)"></i>
+            <i class="fas fa-star cursor-pointer hover:text-yellow-400 transition-colors" onclick="setStars(2)"></i>
+            <i class="fas fa-star cursor-pointer hover:text-yellow-400 transition-colors" onclick="setStars(3)"></i>
+            <i class="fas fa-star cursor-pointer hover:text-yellow-400 transition-colors" onclick="setStars(4)"></i>
+            <i class="fas fa-star cursor-pointer hover:text-yellow-400 transition-colors" onclick="setStars(5)"></i>
+        </div>
+        <textarea placeholder="Leave a comment (optional)" class="w-full bg-gray-50 p-4 rounded-xl mb-6 outline-none h-24"></textarea>
+        <button onclick="submitRating()" class="w-full py-4 btn-purple rounded-xl font-bold">Submit Feedback</button>
+    </div>
+
+    <!-- DRIVER FLOW -->
+
+    <!-- SCREEN: DRIVER HOME -->
+    <div id="screen-driver-home" class="screen-container bg-slate-900">
+        <div class="map-placeholder opacity-40 grayscale invert"></div>
+        <div class="absolute top-0 left-0 right-0 p-6 flex justify-between">
+            <button onclick="toggleMenu()" class="w-12 h-12 bg-white rounded-full flex items-center justify-center"><i class="fas fa-bars"></i></button>
+            <div class="bg-[#4b2c6d] text-white px-6 py-2 rounded-2xl shadow-xl"><div class="text-[10px] opacity-70">Earnings</div><div class="font-bold">$142.50</div></div>
+        </div>
+        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center">
+            <button id="online-btn" onclick="toggleOnline()" class="w-32 h-32 bg-red-500 rounded-full flex flex-col items-center justify-center text-white font-black shadow-lg shadow-red-500/30 transition-all">
+                <span>GO</span><span class="text-sm">ONLINE</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- SCREEN: NEW REQUEST OVERLAY -->
+    <div id="screen-driver-new-request" class="screen-container bg-black/60 items-center justify-end pb-8 p-4">
+        <div class="w-full bg-white rounded-3xl p-6 shadow-2xl animate-bounce">
+            <div class="flex justify-between items-center mb-6">
+                <div class="flex items-center gap-3">
+                    <div class="w-12 h-12 bg-purple-100 text-[#4b2c6d] rounded-full flex items-center justify-center text-xl font-bold">4.9</div>
+                    <div><div class="font-bold text-lg">New Request</div><div class="text-xs text-gray-400">Rider: Sarah K.</div></div>
+                </div>
+                <div class="text-2xl font-bold text-[#4b2c6d]">$15.80</div>
+            </div>
+            <div class="space-y-4 mb-8">
+                <div class="flex items-center gap-4"><div class="w-2 h-2 bg-blue-500 rounded-full"></div><div class="text-sm">302 Broadway St (1.2 mi)</div></div>
+                <div class="flex items-center gap-4"><div class="w-2 h-2 bg-red-500 rounded-sm"></div><div class="text-sm">Downtown Hospital (4.5 mi)</div></div>
+            </div>
+            <div class="flex gap-4">
+                <button onclick="navigate('driver-home')" class="flex-1 py-4 bg-gray-100 text-gray-400 rounded-xl font-bold">Reject</button>
+                <button onclick="driverAccept()" class="flex-[2] py-4 btn-purple rounded-xl font-bold shadow-lg shadow-purple-200">Accept Trip</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- SCREEN: DRIVER ACTIVE TRIP -->
+    <div id="screen-driver-active" class="screen-container bg-white">
+        <div class="p-4 bg-[#4b2c6d] text-white flex justify-between items-center">
+            <div class="flex items-center gap-3"><i class="fas fa-location-arrow text-blue-400"></i><span class="font-bold" id="nav-text">Navigate to Pickup</span></div>
+            <div class="text-sm opacity-80">5 min</div>
+        </div>
+        <div class="map-placeholder"></div>
+        <div class="glass-panel p-6 rounded-t-3xl shadow-2xl">
+            <div class="flex justify-between items-center mb-6">
+                <div class="flex items-center gap-4">
+                    <img src="https://ui-avatars.com/api/?name=Sarah+K&background=f3e8ff&color=4b2c6d" class="w-12 h-12 rounded-full">
+                    <div><div class="font-bold">Sarah K.</div><div class="text-xs text-gray-400">4.9 ★ • Premium Member</div></div>
+                </div>
+                <button class="w-12 h-12 bg-green-50 rounded-full flex items-center justify-center text-green-600"><i class="fas fa-phone"></i></button>
+            </div>
+            <button id="driver-action-btn" onclick="driverNextStep()" class="w-full py-4 btn-purple rounded-xl font-bold shadow-lg">Arrived at Pickup</button>
+        </div>
+    </div>
+
+    <!-- SIDE MENU, PROFILE, SETTINGS (As previous, omitted for brevity but logic remains) -->
+    <div id="side-menu" class="fixed inset-0 bg-black/50 z-50 pointer-events-none opacity-0 transition-opacity flex">
+        <div class="w-80 bg-white h-full shadow-2xl -translate-x-full transition-transform flex flex-col" id="menu-content">
+            <div class="p-8 bg-[#4b2c6d] text-white"><h4 class="font-bold text-lg">Alex Smith</h4></div>
+            <div class="p-4 flex-grow">
+                <ul class="space-y-4">
+                    <li onclick="navigate('welcome')" class="p-2 font-bold text-red-500 cursor-pointer"><i class="fas fa-sign-out-alt mr-2"></i> Logout</li>
+                </ul>
+            </div>
+        </div>
+        <div class="flex-grow h-full" onclick="toggleMenu()"></div>
+    </div>
+
+    <script>
+        let currentRole = 'rider';
+        let tripStep = 0; // 0: Idle, 1: Arriving, 2: In Progress
+        let isOnline = false;
+
+        function setRole(role) {
+            currentRole = role;
+            navigate('login');
+        }
+
+        function loginSuccess() {
+            navigate(currentRole + '-home');
+        }
+
+        function navigate(id) {
+            document.querySelectorAll('.screen-container').forEach(s => s.classList.remove('screen-active'));
+            document.getElementById('screen-' + id).classList.add('screen-active');
+            // Reset menu
+            const menu = document.getElementById('side-menu');
+            const menuContent = document.getElementById('menu-content');
+            menu.classList.add('opacity-0', 'pointer-events-none');
+            menuContent.classList.add('-translate-x-full');
+        }
+
+        function toggleMenu() {
+            const menu = document.getElementById('side-menu');
+            const menuContent = document.getElementById('menu-content');
+            menu.classList.toggle('opacity-0');
+            menu.classList.toggle('pointer-events-none');
+            menuContent.classList.toggle('-translate-x-full');
+        }
+
+        // RIDER ACTIONS
+        function selectRide(type, price) {
+            // Logic for selected state UI if needed
+        }
+
+        function requestRide() {
+            navigate('matching');
+            setTimeout(() => {
+                // Mock Driver Match after 2s
+                navigate('rider-active');
+                tripStep = 1;
+                document.getElementById('rider-status-tag').innerText = "Driver Arriving";
+                // Trigger simulated driver arrival
+                setTimeout(() => {
+                    document.getElementById('rider-status-tag').innerText = "Driver is here";
+                    document.getElementById('rider-status-tag').classList.remove('bg-[#4b2c6d]');
+                    document.getElementById('rider-status-tag').classList.add('bg-green-600');
+                }, 3000);
+            }, 2500);
+        }
+
+        function cancelRide() { navigate('rider-home'); }
+
+        // DRIVER ACTIONS
+        function toggleOnline() {
+            const btn = document.getElementById('online-btn');
+            isOnline = !isOnline;
+            btn.classList.toggle('bg-red-500');
+            btn.classList.toggle('bg-green-500');
+            btn.innerHTML = isOnline ? '<span>OFF</span><span class="text-sm">LINE</span>' : '<span>GO</span><span class="text-sm">ONLINE</span>';
+            
+            if(isOnline) {
+                setTimeout(() => navigate('driver-new-request'), 2000);
+            }
+        }
+
+        function driverAccept() {
+            tripStep = 1;
+            navigate('driver-active');
+            document.getElementById('nav-text').innerText = "Navigate to Pickup";
+            document.getElementById('driver-action-btn').innerText = "Arrived at Pickup";
+        }
+
+        function driverNextStep() {
+            const btn = document.getElementById('driver-action-btn');
+            if(tripStep === 1) { // Was Arriving, now Start
+                tripStep = 2;
+                document.getElementById('nav-text').innerText = "Heading to Destination";
+                btn.innerText = "Start Trip";
+            } else if(tripStep === 2) { // Was starting, now Complete
+                tripStep = 3;
+                btn.innerText = "Complete Trip";
+                btn.classList.remove('btn-purple');
+                btn.classList.add('bg-green-600');
+            } else if(tripStep === 3) {
+                document.getElementById('rating-subtitle').innerText = "How was Sarah's behavior?";
+                navigate('rating');
+            }
+        }
+
+        // RATING SYSTEM
+        function setStars(n) {
+            const stars = document.querySelectorAll('#screen-rating .fa-star');
+            stars.forEach((s, i) => {
+                s.style.color = (i < n) ? '#facc15' : '#e5e7eb';
+            });
+        }
+
+        function submitRating() {
+            alert('Thank you for the feedback!');
+            navigate(currentRole + '-home');
+            // Reset states
+            tripStep = 0;
+            if(currentRole === 'driver') {
+                const btn = document.getElementById('driver-action-btn');
+                btn.classList.add('btn-purple');
+                btn.classList.remove('bg-green-600');
+            }
+        }
+
+        // Simulating the Rider's progress bar when driver starts trip
+        // In a real app, this would be triggered by backend events
+        setInterval(() => {
+            const bar = document.getElementById('trip-progress');
+            if(document.getElementById('screen-rider-active').classList.contains('screen-active')) {
+                let current = parseInt(bar.style.width);
+                if(current < 100) {
+                    bar.style.width = (current + 5) + '%';
+                } else {
+                    // Automatically end trip for rider when bar finishes for demo purposes
+                    document.getElementById('rating-subtitle').innerText = "How was your ride with John?";
+                    navigate('rating');
+                    bar.style.width = '0%';
+                }
+            }
+        }, 1000);
+
+    </script>
+</body>
+</html>

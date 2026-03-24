@@ -1,0 +1,7 @@
+{
+  "name": "Zeyago Ride",
+  "description": "A modern, scalable ride-hailing platform optimized for Ethiopia, featuring rider and driver modes, real-time tracking simulation, and multi-language support.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}

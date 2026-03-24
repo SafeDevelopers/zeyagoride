@@ -1,0 +1,68 @@
+import { Car, Clock, Star, Users, Zap } from 'lucide-react';
+import type { VehicleTypeOption } from '../types/mobile';
+
+export const VEHICLE_TYPES: VehicleTypeOption[] = [
+  {
+    id: 'economy',
+    name: 'Zeyago Economy',
+    price: 'ETB 120',
+    time: '3 min',
+    capacity: 4,
+    image: 'https://images.unsplash.com/photo-1549317661-bd32c8ce0db2?auto=format&fit=crop&w=100&q=80',
+    icon: Car,
+  },
+  {
+    id: 'basic',
+    name: 'Zeyago Basic',
+    price: 'ETB 150',
+    time: '4 min',
+    capacity: 4,
+    image: 'https://images.unsplash.com/photo-1541899481282-d53bffe3c35d?auto=format&fit=crop&w=100&q=80',
+    icon: Car,
+  },
+  {
+    id: 'classic',
+    name: 'Zeyago Classic',
+    price: 'ETB 180',
+    time: '5 min',
+    capacity: 4,
+    image: 'https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=100&q=80',
+    icon: Car,
+  },
+  {
+    id: 'electric',
+    name: 'Zeyago Eco',
+    price: 'ETB 200',
+    time: '6 min',
+    capacity: 4,
+    image: 'https://images.unsplash.com/photo-1593941707882-a5bba14938c7?auto=format&fit=crop&w=100&q=80',
+    icon: Zap,
+  },
+  {
+    id: 'minivan',
+    name: 'Zeyago XL',
+    price: 'ETB 350',
+    time: '8 min',
+    capacity: 6,
+    image: 'https://images.unsplash.com/photo-1532581140115-3e355d1ed1de?auto=format&fit=crop&w=100&q=80',
+    icon: Users,
+  },
+  {
+    id: 'executive',
+    name: 'Zeyago Luxury',
+    price: 'ETB 500',
+    time: '10 min',
+    capacity: 4,
+    image: 'https://images.unsplash.com/photo-1563720223185-11003d516905?auto=format&fit=crop&w=100&q=80',
+    icon: Star,
+  },
+  {
+    id: 'hourly',
+    name: 'Zeyago Hourly',
+    price: 'ETB 800',
+    time: 'N/A',
+    capacity: 4,
+    image: 'https://images.unsplash.com/photo-1494976388531-d1058494cdd8?auto=format&fit=crop&w=100&q=80',
+    icon: Clock,
+  },
+];

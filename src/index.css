@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+/* Velox-inspired design tokens (Zeyago Ride — presentation only) */
+@theme {
+  --color-velox-primary: #4b2c6d;
+  --color-velox-dark: #2d1b42;
+  --color-velox-accent: #8e44ad;
+  --color-velox-bg: #f8f9fa;
+}
+
+@layer utilities {
+  .velox-screen {
+    @apply min-h-0 bg-velox-bg text-slate-900;
+  }
+  .velox-map-overlay-card {
+    @apply rounded-3xl border border-white/70 bg-white/92 shadow-[0_12px_48px_rgba(45,27,66,0.14)] backdrop-blur-xl;
+  }
+  .velox-glass-bottom {
+    @apply rounded-t-3xl border-t border-black/5 bg-white/95 shadow-[0_-8px_40px_rgba(45,27,66,0.12)] backdrop-blur-[10px];
+  }
+  .velox-phone-chrome {
+    @apply bg-gradient-to-b from-velox-dark via-[#241536] to-[#1a0f26];
+  }
+  .velox-focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-velox-accent/50;
+  }
+  /** Shared mobile safe-area + scroll padding (PWA / notched devices) */
+  .velox-safe-x {
+    padding-left: max(1.25rem, env(safe-area-inset-left, 0px));
+    padding-right: max(1.25rem, env(safe-area-inset-right, 0px));
+  }
+  .velox-safe-t {
+    padding-top: max(0.75rem, env(safe-area-inset-top, 0px));
+  }
+  .velox-safe-b {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+  }
+  /** Side drawer / hamburger menu horizontal inset (2rem chrome + safe areas) */
+  .velox-mobile-menu-pad {
+    padding-left: max(2rem, env(safe-area-inset-left, 0px));
+    padding-right: max(2rem, env(safe-area-inset-right, 0px));
+  }
+  /** Bottom padding for scroll regions above home indicator */
+  .velox-scroll-bottom {
+    padding-bottom: max(1.5rem, env(safe-area-inset-bottom, 0px));
+  }
+  .velox-pulse-ring {
+    position: absolute;
+    width: 100px;
+    height: 100px;
+    border-radius: 9999px;
+    background: rgba(75, 44, 109, 0.2);
+    animation: velox-pulse 2s infinite;
+  }
+  @keyframes velox-pulse {
+    0% {
+      transform: scale(0.5);
+      opacity: 1;
+    }
+    100% {
+      transform: scale(2.5);
+      opacity: 0;
+    }
+  }
+}
