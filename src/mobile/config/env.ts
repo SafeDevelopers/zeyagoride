@@ -39,12 +39,13 @@ export const API_DEV_FALLBACK_TO_MOCK = parseBoolEnv(
 
 /**
  * Demo-only: after `driver_assigned`, auto-advance the same ride through arrived → in progress → completed
- * (mock in-memory store or Nest in-memory store). Enabled when mock API is on, or when
- * `VITE_DEMO_AUTO_TRIP_PROGRESS=true`. Production: keep false unless intentionally demoing.
+ * (mock in-memory store or Nest in-memory store). Defaults on when `USE_MOCK_API` is true; set
+ * `VITE_DEMO_AUTO_TRIP_PROGRESS=false` to follow explicit driver/API transitions only.
  */
-export const DEMO_AUTO_TRIP_PROGRESS =
-  USE_MOCK_API ||
-  parseBoolEnv(import.meta.env.VITE_DEMO_AUTO_TRIP_PROGRESS as string | undefined, false);
+export const DEMO_AUTO_TRIP_PROGRESS = parseBoolEnv(
+  import.meta.env.VITE_DEMO_AUTO_TRIP_PROGRESS as string | undefined,
+  USE_MOCK_API,
+);
 
 /** When `true`, `getRealtimeClient()` uses the transport placeholder (still no network until wired). When `false`, mock in-memory bus only. */
 export const REALTIME_ENABLED = parseBoolEnv(import.meta.env.VITE_REALTIME_ENABLED as string | undefined, false);

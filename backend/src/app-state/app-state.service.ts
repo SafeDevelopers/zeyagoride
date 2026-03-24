@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma, Ride as PrismaRide, RideStatus as DbRideStatus } from '@prisma/client';
 import { RideSummaryDto } from '../common/dto/ride-summary.dto';
 import { ProfileType } from '../common/enums/profile-type.enum';
 import { RideStatus } from '../common/enums/ride-status.enum';
@@ -9,29 +10,16 @@ import { CancelRideBodyDto } from '../rides/dto/cancel-ride-body.dto';
 import { RequestRideDto } from '../rides/dto/request-ride.dto';
 import { AcceptRideDto } from '../driver/dto/accept-ride.dto';
 import { DEMO_AUTO_TRIP_PROGRESS_DELAYS_MS } from './demo-auto-trip-timing';
-
-type OfferRow = {
-  requestId: string;
-  rideId: string | null;
-  pickup: string;
-  destination: string;
-  earning: string;
-};
+import { PrismaService } from '../prisma/prisma.service';
 
 /**
- * Single in-memory store for rides, driver offers, and trips (no DB).
- * Keeps rider `POST /rides` and driver matching/accept/decline/trip flows consistent.
+ * PostgreSQL-backed app state (Prisma). Method names and return shapes match the former in-memory service.
  */
 @Injectable()
 export class AppStateService {
-  private readonly rides = new Map<string, RideSummaryDto>();
-  private readonly offers = new Map<string, OfferRow>();
-  private readonly rideIdToRequestId = new Map<string, string>();
-  private readonly trips = new Map<string, { tripId: string; rideId: string; startedAt: number }>();
-
-  private driverOnline = false;
-
   private readonly placeholderDriverId = 'placeholder-driver';
+
+  constructor(private readonly prisma: PrismaService) {}
 
   /** Timed transitions for single-window demos when `DEMO_AUTO_TRIP_PROGRESS=true` on the Nest process. */
   private scheduleDemoAutoProgressIfEnabled(tripId: string): void {
@@ -41,37 +29,30 @@ export class AppStateService {
     const t2 = t1 + toInProgress;
     const t3 = t2 + toCompleted;
     setTimeout(() => {
-      try {
-        this.arriveAtPickup(tripId);
-      } catch {
-        /* trip removed or invalid */
-      }
+      void this.arriveAtPickup(tripId).catch(() => undefined);
     }, t1);
     setTimeout(() => {
-      try {
-        this.startTrip(tripId);
-      } catch {
-        /* trip removed or invalid */
-      }
+      void this.startTrip(tripId).catch(() => undefined);
     }, t2);
     setTimeout(() => {
-      try {
-        this.completeTrip(tripId);
-      } catch {
-        /* trip removed or invalid */
-      }
+      void this.completeTrip(tripId).catch(() => undefined);
     }, t3);
   }
 
-  setDriverOnline(online: boolean): { online: boolean } {
-    this.driverOnline = online;
+  async setDriverOnline(online: boolean): Promise<{ online: boolean }> {
+    await this.prisma.driver.upsert({
+      where: { id: this.placeholderDriverId },
+      create: { id: this.placeholderDriverId, online },
+      update: { online },
+    });
     return { online };
   }
 
-  createRide(dto: RequestRideDto): { ride: RideSummaryDto } {
+  async createRide(dto: RequestRideDto): Promise<{ ride: RideSummaryDto }> {
     const id = `ride-${Date.now()}`;
-    const now = new Date().toISOString();
-    const ride: RideSummaryDto = {
+    const now = new Date();
+    const requestId = `req-${id}`;
+    const rideDto: RideSummaryDto = {
       id,
       riderId: 'placeholder-rider',
       driverId: null,
@@ -87,26 +68,27 @@ export class AppStateService {
       profileType: dto.profileType,
       scheduledDate: dto.scheduledDate,
       scheduledTime: dto.scheduledTime,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
       distanceMeters: dto.distanceMeters,
       durationSeconds: dto.durationSeconds,
       fareEstimate: dto.fareEstimate,
     };
-    this.rides.set(id, ride);
 
-    const requestId = `req-${id}`;
-    const earning = this.formatEarning(dto.fareEstimate);
-    this.offers.set(requestId, {
-      requestId,
-      rideId: id,
-      pickup: ride.pickup,
-      destination: ride.destination,
-      earning,
+    await this.prisma.$transaction(async (tx) => {
+      await tx.ride.create({ data: this.rideDtoToCreateInput(rideDto) });
+      await tx.offer.create({
+        data: {
+          requestId,
+          rideId: id,
+          pickup: rideDto.pickup,
+          destination: rideDto.destination,
+          earning: this.formatEarning(dto.fareEstimate),
+        },
+      });
     });
-    this.rideIdToRequestId.set(id, requestId);
 
-    return { ride };
+    return { ride: rideDto };
   }
 
   private formatEarning(fare?: FareEstimateDto): string {
@@ -115,46 +97,98 @@ export class AppStateService {
     return 'ETB 180.00';
   }
 
-  findRideOrThrow(rideId: string): { ride: RideSummaryDto } {
-    const ride = this.rides.get(rideId);
+  private rideDtoToCreateInput(row: RideSummaryDto): Prisma.RideUncheckedCreateInput {
+    return {
+      id: row.id,
+      riderId: row.riderId,
+      driverId: row.driverId,
+      status: row.status as unknown as DbRideStatus,
+      pickup: row.pickup,
+      destination: row.destination,
+      pickupAddress: row.pickupAddress,
+      destinationAddress: row.destinationAddress,
+      pickupCoords: row.pickupCoords as unknown as Prisma.InputJsonValue,
+      destinationCoords: row.destinationCoords as unknown as Prisma.InputJsonValue,
+      stops: row.stops as unknown as Prisma.InputJsonValue,
+      vehicleType: row.vehicleType,
+      profileType: row.profileType,
+      scheduledDate: row.scheduledDate,
+      scheduledTime: row.scheduledTime,
+      createdAt: new Date(row.createdAt ?? Date.now()),
+      updatedAt: new Date(row.updatedAt ?? Date.now()),
+      distanceMeters: row.distanceMeters,
+      durationSeconds: row.durationSeconds,
+      fareEstimate: row.fareEstimate as unknown as Prisma.InputJsonValue,
+    };
+  }
+
+  private toRideSummaryDto(row: PrismaRide): RideSummaryDto {
+    return {
+      id: row.id,
+      riderId: row.riderId,
+      driverId: row.driverId,
+      status: row.status as unknown as RideStatus,
+      pickup: row.pickup,
+      destination: row.destination,
+      pickupAddress: row.pickupAddress,
+      destinationAddress: row.destinationAddress,
+      pickupCoords: (row.pickupCoords as RideSummaryDto['pickupCoords']) ?? null,
+      destinationCoords: (row.destinationCoords as RideSummaryDto['destinationCoords']) ?? null,
+      stops: (row.stops as unknown as RideSummaryDto['stops']) ?? [],
+      vehicleType: row.vehicleType as VehicleType,
+      profileType: row.profileType as ProfileType,
+      scheduledDate: row.scheduledDate ?? undefined,
+      scheduledTime: row.scheduledTime ?? undefined,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+      distanceMeters: row.distanceMeters ?? undefined,
+      durationSeconds: row.durationSeconds ?? undefined,
+      fareEstimate: row.fareEstimate as unknown as FareEstimateDto | undefined,
+    };
+  }
+
+  async findRideOrThrow(rideId: string): Promise<{ ride: RideSummaryDto }> {
+    const ride = await this.prisma.ride.findUnique({ where: { id: rideId } });
     if (!ride) {
       throw new NotFoundException('ride_not_found');
     }
-    return { ride };
+    return { ride: this.toRideSummaryDto(ride) };
   }
 
-  cancelRide(rideId: string, _body?: CancelRideBodyDto): { cancelled: true; ride?: RideSummaryDto } {
-    const existing = this.rides.get(rideId);
+  async cancelRide(
+    rideId: string,
+    _body?: CancelRideBodyDto,
+  ): Promise<{ cancelled: true; ride?: RideSummaryDto }> {
+    const existing = await this.prisma.ride.findUnique({ where: { id: rideId } });
     if (!existing) {
       return { cancelled: true };
     }
     const cancelledSnapshot: RideSummaryDto = {
-      ...existing,
+      ...this.toRideSummaryDto(existing),
       status: RideStatus.Cancelled,
       updatedAt: new Date().toISOString(),
     };
-
-    const reqId = this.rideIdToRequestId.get(rideId);
-    if (reqId) {
-      this.offers.delete(reqId);
-      this.rideIdToRequestId.delete(rideId);
-    }
-    for (const [tid, tr] of [...this.trips.entries()]) {
-      if (tr.rideId === rideId) {
-        this.trips.delete(tid);
-      }
-    }
-    this.rides.delete(rideId);
-
+    await this.prisma.ride.delete({ where: { id: rideId } });
     return { cancelled: true, ride: cancelledSnapshot };
   }
 
-  listIncomingRequests(): { requests: DriverIncomingOfferDto[] } {
-    if (!this.driverOnline) {
+  async listIncomingRequests(): Promise<{ requests: DriverIncomingOfferDto[] }> {
+    const driverRow = await this.prisma.driver.findUnique({
+      where: { id: this.placeholderDriverId },
+    });
+    if (!driverRow?.online) {
       return { requests: [] };
     }
+    const offers = await this.prisma.offer.findMany();
+    const rideIds = [...new Set(offers.map((o) => o.rideId).filter(Boolean))] as string[];
+    const rides =
+      rideIds.length > 0
+        ? await this.prisma.ride.findMany({ where: { id: { in: rideIds } } })
+        : [];
+    const rideById = new Map(rides.map((r) => [r.id, r]));
+
     const out: DriverIncomingOfferDto[] = [];
-    for (const offer of this.offers.values()) {
+    for (const offer of offers) {
       if (!offer.rideId) {
         out.push({
           id: offer.requestId,
@@ -164,8 +198,8 @@ export class AppStateService {
         });
         continue;
       }
-      const r = this.rides.get(offer.rideId);
-      if (r?.status === RideStatus.Matching) {
+      const r = rideById.get(offer.rideId);
+      if (r?.status === DbRideStatus.matching) {
         out.push({
           id: offer.requestId,
           pickup: offer.pickup,
@@ -177,31 +211,45 @@ export class AppStateService {
     return { requests: out };
   }
 
-  acceptRequest(requestId: string, _body: AcceptRideDto): { tripId: string; ride: RideSummaryDto } {
-    const offer = this.offers.get(requestId);
+  async acceptRequest(
+    requestId: string,
+    _body: AcceptRideDto,
+  ): Promise<{ tripId: string; ride: RideSummaryDto }> {
+    const offer = await this.prisma.offer.findUnique({ where: { requestId } });
     if (!offer) {
       throw new NotFoundException('unknown_request');
     }
     const tripId = `trip-${requestId}`;
-    const now = new Date().toISOString();
+    const now = new Date();
+    const nowIso = now.toISOString();
 
     if (offer.rideId) {
-      const r = this.rides.get(offer.rideId);
+      const r = await this.prisma.ride.findUnique({ where: { id: offer.rideId } });
       if (!r) {
         throw new NotFoundException('missing_ride');
       }
-      const updated: RideSummaryDto = {
-        ...r,
-        driverId: this.placeholderDriverId,
-        status: RideStatus.DriverAssigned,
-        updatedAt: now,
-      };
-      this.rides.set(offer.rideId, updated);
-      this.offers.delete(requestId);
-      this.rideIdToRequestId.delete(offer.rideId);
-      this.trips.set(tripId, { tripId, rideId: offer.rideId, startedAt: Date.now() });
+      await this.prisma.$transaction(async (tx) => {
+        await tx.ride.update({
+          where: { id: offer.rideId! },
+          data: {
+            driverId: this.placeholderDriverId,
+            status: DbRideStatus.driver_assigned,
+            updatedAt: now,
+          },
+        });
+        await tx.offer.delete({ where: { requestId } });
+        await tx.trip.create({
+          data: {
+            id: tripId,
+            rideId: offer.rideId!,
+            driverId: this.placeholderDriverId,
+            startedAt: now,
+          },
+        });
+      });
+      const updated = await this.prisma.ride.findUniqueOrThrow({ where: { id: offer.rideId } });
       this.scheduleDemoAutoProgressIfEnabled(tripId);
-      return { tripId, ride: updated };
+      return { tripId, ride: this.toRideSummaryDto(updated) };
     }
 
     const synthetic: RideSummaryDto = {
@@ -218,84 +266,100 @@ export class AppStateService {
       stops: [],
       vehicleType: VehicleType.Economy,
       profileType: ProfileType.Personal,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
-    this.rides.set(synthetic.id, synthetic);
-    this.offers.delete(requestId);
-    this.trips.set(tripId, { tripId, rideId: synthetic.id, startedAt: Date.now() });
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.ride.create({ data: this.rideDtoToCreateInput(synthetic) });
+      await tx.offer.delete({ where: { requestId } });
+      await tx.trip.create({
+        data: {
+          id: tripId,
+          rideId: synthetic.id,
+          driverId: this.placeholderDriverId,
+          startedAt: now,
+        },
+      });
+    });
     this.scheduleDemoAutoProgressIfEnabled(tripId);
-    return { tripId, ride: synthetic };
+    const created = await this.prisma.ride.findUniqueOrThrow({ where: { id: synthetic.id } });
+    return { tripId, ride: this.toRideSummaryDto(created) };
   }
 
-  declineRequest(requestId: string): { declined: true } {
-    const offer = this.offers.get(requestId);
+  async declineRequest(requestId: string): Promise<{ declined: true }> {
+    const offer = await this.prisma.offer.findUnique({ where: { requestId } });
     if (offer?.rideId) {
-      const existing = this.rides.get(offer.rideId);
+      const existing = await this.prisma.ride.findUnique({ where: { id: offer.rideId } });
       if (existing) {
-        const cancelled: RideSummaryDto = {
-          ...existing,
-          status: RideStatus.Cancelled,
-          updatedAt: new Date().toISOString(),
-        };
-        this.rides.set(offer.rideId, cancelled);
+        await this.prisma.ride.update({
+          where: { id: offer.rideId },
+          data: {
+            status: DbRideStatus.cancelled,
+            updatedAt: new Date(),
+          },
+        });
       }
-      this.rideIdToRequestId.delete(offer.rideId);
     }
-    this.offers.delete(requestId);
+    await this.prisma.offer.deleteMany({ where: { requestId } });
     return { declined: true };
   }
 
-  private updateRideByTripId(tripId: string, status: RideStatus): { tripId: string; ride: RideSummaryDto } {
-    const t = this.trips.get(tripId);
+  private async updateRideByTripId(
+    tripId: string,
+    status: RideStatus,
+  ): Promise<{ tripId: string; ride: RideSummaryDto }> {
+    const t = await this.prisma.trip.findUnique({ where: { id: tripId } });
     if (!t) {
       throw new NotFoundException('trip_not_found');
     }
-    const ride = this.rides.get(t.rideId);
+    const ride = await this.prisma.ride.findUnique({ where: { id: t.rideId } });
     if (!ride) {
       throw new NotFoundException('trip_not_found');
     }
-    const updated: RideSummaryDto = {
-      ...ride,
-      status,
-      updatedAt: new Date().toISOString(),
-    };
-    this.rides.set(t.rideId, updated);
-    return { tripId, ride: updated };
+    const now = new Date();
+    await this.prisma.ride.update({
+      where: { id: ride.id },
+      data: {
+        status: status as unknown as DbRideStatus,
+        updatedAt: now,
+      },
+    });
+    const updated = await this.prisma.ride.findUniqueOrThrow({ where: { id: ride.id } });
+    return { tripId, ride: this.toRideSummaryDto(updated) };
   }
 
-  arriveAtPickup(tripId: string): { trip: { tripId: string; ride: RideSummaryDto } } {
-    const { tripId: tid, ride } = this.updateRideByTripId(tripId, RideStatus.DriverArrived);
+  async arriveAtPickup(tripId: string): Promise<{ trip: { tripId: string; ride: RideSummaryDto } }> {
+    const { tripId: tid, ride } = await this.updateRideByTripId(tripId, RideStatus.DriverArrived);
     return { trip: { tripId: tid, ride } };
   }
 
-  startTrip(tripId: string): { trip: { tripId: string; ride: RideSummaryDto } } {
-    const { tripId: tid, ride } = this.updateRideByTripId(tripId, RideStatus.InProgress);
+  async startTrip(tripId: string): Promise<{ trip: { tripId: string; ride: RideSummaryDto } }> {
+    const { tripId: tid, ride } = await this.updateRideByTripId(tripId, RideStatus.InProgress);
     return { trip: { tripId: tid, ride } };
   }
 
-  completeTrip(tripId: string): { trip: { tripId: string; ride: RideSummaryDto } } {
-    const { tripId: tid, ride } = this.updateRideByTripId(tripId, RideStatus.Completed);
+  async completeTrip(tripId: string): Promise<{ trip: { tripId: string; ride: RideSummaryDto } }> {
+    const { tripId: tid, ride } = await this.updateRideByTripId(tripId, RideStatus.Completed);
     return { trip: { tripId: tid, ride } };
   }
 
-  getTrip(tripId: string): { trip: { tripId: string; ride: RideSummaryDto } } {
-    const t = this.trips.get(tripId);
+  async getTrip(tripId: string): Promise<{ trip: { tripId: string; ride: RideSummaryDto } }> {
+    const t = await this.prisma.trip.findUnique({ where: { id: tripId } });
     if (!t) {
       throw new NotFoundException('trip_not_found');
     }
-    const ride = this.rides.get(t.rideId);
+    const ride = await this.prisma.ride.findUnique({ where: { id: t.rideId } });
     if (!ride) {
       throw new NotFoundException('trip_not_found');
     }
-    return { trip: { tripId, ride } };
+    return { trip: { tripId, ride: this.toRideSummaryDto(ride) } };
   }
 
   /**
-   * Read-only snapshot for admin dashboard — same in-memory state as rider/driver flows.
-   * No separate admin data model.
+   * Read-only snapshot for admin dashboard — same persisted state as rider/driver flows.
    */
-  getAdminOverview(): {
+  async getAdminOverview(): Promise<{
     driverOnline: boolean;
     summary: {
       totalRides: number;
@@ -313,30 +377,48 @@ export class AppStateService {
       destination: string;
       earning: string;
     }>;
-  } {
-    const rides = [...this.rides.values()];
+  }> {
+    const [rides, offers, trips, driverRow] = await Promise.all([
+      this.prisma.ride.findMany(),
+      this.prisma.offer.findMany(),
+      this.prisma.trip.findMany(),
+      this.prisma.driver.findUnique({ where: { id: this.placeholderDriverId } }),
+    ]);
+
+    const rideDtos = rides.map((r) => this.toRideSummaryDto(r));
     const byStatus: Partial<Record<RideStatus, number>> = {};
-    for (const r of rides) {
+    for (const r of rideDtos) {
       byStatus[r.status] = (byStatus[r.status] ?? 0) + 1;
     }
     let completedRevenueEstimate = 0;
-    for (const r of rides) {
+    for (const r of rideDtos) {
       if (r.status === RideStatus.Completed && r.fareEstimate?.amount != null) {
         completedRevenueEstimate += r.fareEstimate.amount;
       }
     }
+
     return {
-      driverOnline: this.driverOnline,
+      driverOnline: driverRow?.online ?? false,
       summary: {
-        totalRides: rides.length,
-        activeTrips: this.trips.size,
-        pendingOffers: this.offers.size,
+        totalRides: rideDtos.length,
+        activeTrips: trips.length,
+        pendingOffers: offers.length,
         completedRevenueEstimate: Math.round(completedRevenueEstimate * 100) / 100,
         byStatus,
       },
-      rides,
-      trips: [...this.trips.values()],
-      offers: [...this.offers.values()],
+      rides: rideDtos,
+      trips: trips.map((t) => ({
+        tripId: t.id,
+        rideId: t.rideId,
+        startedAt: t.startedAt.getTime(),
+      })),
+      offers: offers.map((o) => ({
+        requestId: o.requestId,
+        rideId: o.rideId,
+        pickup: o.pickup,
+        destination: o.destination,
+        earning: o.earning,
+      })),
     };
   }
 }

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Phone,
@@ -96,8 +96,33 @@ import { DriverActiveTripScreen } from './screens/driver/DriverActiveTripScreen'
 import { DriverRequestsScreen } from './screens/driver/DriverRequestsScreen';
 import { DriverHistoryScreen } from './screens/driver/DriverHistoryScreen';
 import type { WalletTransaction } from './types/mobile';
+import type { LatLng, RideSummary } from './types/api';
+import type { RideStatus as RiderUiPhase } from './types/mobile';
+
+/**
+ * Rider active-trip map: approximate vehicle position along pickup→destination so framing matches
+ * driver trip (driver pin + route) when the API does not expose live driver GPS.
+ */
+function estimateRiderTripDriverVehicleCoords(ride: RideSummary, uiPhase: RiderUiPhase): LatLng | null {
+  const pickup = ride.pickupCoords;
+  const dest = ride.destinationCoords;
+  if (!pickup || !dest) return null;
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+  const at = (t: number): LatLng => ({
+    latitude: lerp(pickup.latitude, dest.latitude, t),
+    longitude: lerp(pickup.longitude, dest.longitude, t),
+  });
+  const s = ride.status;
+  if (s === 'driver_assigned' || uiPhase === 'found') return at(0.18);
+  if (s === 'driver_arrived' || uiPhase === 'arrived') return pickup;
+  if (s === 'in_progress' || uiPhase === 'ongoing') return at(0.62);
+  return null;
+}
 
 export function MobileAppShell() {
+  /** Browser geolocation for “my location” pin on the map (home step only). */
+  const [userLocationCoords, setUserLocationCoords] = useState<LatLng | null>(null);
+
   const {
     t,
     language,
@@ -351,6 +376,29 @@ export function MobileAppShell() {
     handleLogout,
   } = useMobileApp();
 
+  useEffect(() => {
+    if (step !== 'home') {
+      setUserLocationCoords(null);
+      return;
+    }
+    if (typeof navigator === 'undefined' || !navigator.geolocation) return;
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        setUserLocationCoords({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+        });
+      },
+      () => {
+        /* permission denied or position unavailable */
+      },
+      { enableHighAccuracy: true, maximumAge: 15_000, timeout: 20_000 },
+    );
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [step]);
+
   /** After rating, restore rider/driver home: clear trip overlays and shared ride state so the shell header + bottom card render again. */
   const dismissRatingAndReturnHome = useCallback(() => {
     setShowRating(false);
@@ -493,6 +541,11 @@ export function MobileAppShell() {
   const riderHomePlanningCompact =
     mode === 'rider' && rideStatus === 'idle' && !destinationCommitted && !riderVehicleSheetExpanded;
 
+  /** Matched driver en route / at pickup / trip — taller sheet so trip controls are not clipped. */
+  const riderActiveTripSheet =
+    mode === 'rider' &&
+    (rideStatus === 'found' || rideStatus === 'arrived' || rideStatus === 'ongoing');
+
   const riderBottomGlassMaxClass = riderRequestSheetMainLayout
     ? riderSearchingCompactSheet
       ? 'max-h-[min(42%,360px)]'
@@ -501,7 +554,28 @@ export function MobileAppShell() {
       ? riderWhereToSearchExpanded
         ? 'max-h-[min(88%,620px)]'
         : 'max-h-[min(52%,380px)]'
-      : 'max-h-[46%]';
+      : riderActiveTripSheet
+        ? 'max-h-[min(88%,calc(100%-0.75rem))]'
+        : 'max-h-[46%]';
+
+  /** Same “rider home” map framing as before for idle + searching; active trip uses default (driver-style) framing. */
+  const riderMapRiderHomeFraming =
+    mode === 'rider' &&
+    riderTab === 'home' &&
+    (rideStatus === 'idle' || rideStatus === 'searching');
+
+  const riderMapDriverCoords = useMemo(() => {
+    if (mode !== 'rider') return null;
+    if (!currentRide) return null;
+    if (
+      rideStatus !== 'found' &&
+      rideStatus !== 'arrived' &&
+      rideStatus !== 'ongoing'
+    ) {
+      return null;
+    }
+    return estimateRiderTripDriverVehicleCoords(currentRide, rideStatus);
+  }, [mode, currentRide, rideStatus]);
 
   /** Where-to phase on rider Home: no outer sheet scroll; suggestion list scrolls inside PlaceSuggestions. */
   const riderWhereToNoOuterScroll =
@@ -595,7 +669,9 @@ export function MobileAppShell() {
                 <MapboxMap
                   pickupCoords={currentRide?.pickupCoords ?? pickupCoords ?? null}
                   destinationCoords={currentRide?.destinationCoords ?? destinationCoords ?? null}
-                  driverCoords={null}
+                  driverCoords={mode === 'driver' ? userLocationCoords : riderMapDriverCoords}
+                  userLocationCoords={mode === 'driver' ? null : userLocationCoords}
+                  cameraFraming={riderMapRiderHomeFraming ? 'riderHome' : 'default'}
                   stops={
                     currentRide?.stops ??
                     stops.map((address, i) => ({
@@ -687,7 +763,9 @@ export function MobileAppShell() {
                         ? riderSearchingCompactSheet
                           ? ' h-auto min-h-0'
                           : ' h-[min(88%,calc(100%-0.5rem))] min-h-0'
-                        : ''
+                        : riderActiveTripSheet
+                          ? ' h-[min(88%,calc(100%-0.5rem))] min-h-0'
+                          : ''
                     }`}
                   >
                     <motion.div
@@ -697,8 +775,10 @@ export function MobileAppShell() {
                           ? riderSearchingCompactSheet
                             ? ' overflow-hidden'
                             : ' h-full overflow-hidden'
-                          : ''
-                      }${riderWhereToNoOuterScroll ? ' overflow-visible' : !riderRequestSheetMainLayout ? ' overflow-hidden' : ''}`}
+                          : riderActiveTripSheet
+                            ? ' h-full overflow-hidden'
+                            : ''
+                      }${riderWhereToNoOuterScroll ? ' overflow-visible' : !riderRequestSheetMainLayout && !riderActiveTripSheet ? ' overflow-hidden' : ''}`}
                     >
                       <div
                         className={`relative flex min-h-0 flex-col${
@@ -706,8 +786,10 @@ export function MobileAppShell() {
                             ? riderSearchingCompactSheet
                               ? ' overflow-hidden'
                               : ' h-full flex-1 overflow-hidden'
-                            : ' flex-1'
-                        }${riderWhereToNoOuterScroll ? ' overflow-visible' : !riderRequestSheetMainLayout ? ' overflow-hidden' : ''}`}
+                            : riderActiveTripSheet
+                              ? ' h-full flex-1 overflow-hidden'
+                              : ' flex-1'
+                        }${riderWhereToNoOuterScroll ? ' overflow-visible' : !riderRequestSheetMainLayout && !riderActiveTripSheet ? ' overflow-hidden' : ''}`}
                       >
                         {riderRequestSheetMainLayout ? (
                           <div
@@ -722,7 +804,7 @@ export function MobileAppShell() {
                         ) : (
                           <>
                             <div
-                              className={`velox-safe-x pt-5 velox-scroll-bottom ${
+                              className={`velox-safe-x velox-safe-b pt-5 velox-scroll-bottom ${
                                 riderWhereToNoOuterScroll
                                   ? 'shrink-0 overflow-x-hidden overflow-y-visible'
                                   : 'min-h-0 flex-1 overflow-y-auto overscroll-y-contain'
@@ -752,14 +834,16 @@ export function MobileAppShell() {
                 {/* Rider: active trip / search UI when overlays hide the floating card */}
                 {mode === 'rider' && !riderFloatingCardVisible && rideStatus !== 'idle' && rideStatus !== 'completed' && (
                   <div
-                    className={`pointer-events-none absolute bottom-0 left-0 right-0 z-10 w-full min-h-0 transition-[max-height] duration-300 ease-out ${riderBottomGlassMaxClass}`}
+                    className={`pointer-events-none absolute bottom-0 left-0 right-0 z-10 w-full min-h-0 transition-[max-height] duration-300 ease-out ${riderBottomGlassMaxClass}${
+                      riderActiveTripSheet ? ' h-[min(88%,calc(100%-0.5rem))] min-h-0' : ''
+                    }`}
                   >
                     <motion.div
                       layout
-                      className="velox-glass-bottom pointer-events-auto relative mx-auto flex max-h-full min-h-0 flex-col overflow-hidden rounded-t-[1.75rem]"
+                      className="velox-glass-bottom pointer-events-auto relative mx-auto flex h-full max-h-full min-h-0 flex-col overflow-hidden rounded-t-[1.75rem]"
                     >
-                      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-                        <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain velox-safe-x pt-5 velox-scroll-bottom">
+                      <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+                        <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain velox-safe-x velox-safe-b pt-5 velox-scroll-bottom">
                           <RiderHomeScreen />
                           <RiderTripScreen />
                         </div>

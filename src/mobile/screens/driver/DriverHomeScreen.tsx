@@ -31,29 +31,19 @@ export function DriverHomeScreen() {
   return (
     <>
       <div className="relative h-full">
-        {/* Map Background — dark premium feel */}
-        <div className="absolute inset-0 bg-gradient-to-b from-[#1a1224] via-[#2a1f38] to-slate-950">
-          <div
-            className="absolute inset-0 opacity-[0.2]"
-            style={{
-              backgroundImage:
-                'linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px)',
-              backgroundSize: '40px 40px',
-            }}
-          />
-          {isNavigating && (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="h-1 w-full max-w-[200px] rounded-full bg-velox-primary/20">
-                <motion.div
-                  initial={{ width: 0 }}
-                  animate={{ width: '100%' }}
-                  transition={{ duration: 10, repeat: Infinity }}
-                  className="h-full rounded-full bg-velox-primary/100"
-                />
-              </div>
+        {/* Map is rendered by MobileAppShell behind this layer — keep background transparent so Mapbox shows through. */}
+        {isNavigating && (
+          <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
+            <div className="h-1 w-full max-w-[200px] rounded-full bg-velox-primary/20">
+              <motion.div
+                initial={{ width: 0 }}
+                animate={{ width: '100%' }}
+                transition={{ duration: 10, repeat: Infinity }}
+                className="h-full rounded-full bg-velox-primary/100"
+              />
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Top — floating menu + earnings (Velox driver home) */}
         {!isNavigating && (

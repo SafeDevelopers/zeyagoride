@@ -109,10 +109,13 @@ async function startServer() {
     });
   });
 
-  /** Forward Nest admin routes — avoids 404 when the browser hits the Vite origin instead of Nest. */
-  app.use("/admin", (req, res) => {
+  /**
+   * Forward Nest admin **API** only (`GET /admin/overview`).
+   * Do not proxy bare `/admin` — that path is the React Admin dashboard route; Vite must serve `index.html`.
+   */
+  app.use("/admin/overview", (req, res) => {
     const suffix = req.url === "/" || req.url === "" ? "" : req.url;
-    const upstreamPath = `/admin${suffix}`;
+    const upstreamPath = `/admin/overview${suffix}`;
     const proxyReq = http.request(
       {
         hostname: nestTarget.host,

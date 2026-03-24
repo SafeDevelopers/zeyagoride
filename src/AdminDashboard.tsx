@@ -7,7 +7,7 @@ import {
   Search,
   Bell,
   LayoutDashboard,
-  Map,
+  Map as MapIcon,
   ShieldCheck,
   Zap,
   MessageSquare,
@@ -125,7 +125,7 @@ export default function AdminDashboard() {
             { icon: LayoutDashboard, label: 'Dashboard' },
             { icon: Users, label: 'Users' },
             { icon: Car, label: 'Drivers' },
-            { icon: Map, label: 'Live Map' },
+            { icon: MapIcon, label: 'Live Map' },
             { icon: DollarSign, label: 'Payments' },
             { icon: Zap, label: 'Pricing' },
             { icon: MessageSquare, label: 'Support' },
@@ -499,7 +499,7 @@ export default function AdminDashboard() {
             <div className="absolute inset-0 opacity-40" style={{ backgroundImage: 'radial-gradient(#94a3b8 1px, transparent 1px)', backgroundSize: '20px 20px' }}></div>
             <div className="absolute inset-0 flex items-center justify-center p-6">
               <div className="max-w-md text-center">
-                <Map size={48} className="mx-auto mb-4 text-slate-300" />
+                <MapIcon size={48} className="mx-auto mb-4 text-slate-300" />
                 <p className="font-bold text-slate-400">Map preview</p>
                 <p className="mt-2 text-xs leading-relaxed text-slate-500">
                   Live positions are not streamed yet. Use Dashboard for current ride rows; driver online:{' '}

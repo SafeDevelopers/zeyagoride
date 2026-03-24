@@ -6,6 +6,7 @@ import { formatDistanceLabel, formatDurationLabel } from '../../services/mapbox/
 import { toCompletedRide } from '../../services/rides/rideLifecycle';
 import { buildWalletTransactionFromRide } from '../../utils/walletFromRide';
 import { IS_DEV_UI } from '../../utils/devUi';
+import { USE_MOCK_API } from '../../config/env';
 
 export function RiderTripScreen() {
   const {
@@ -306,20 +307,22 @@ export function RiderTripScreen() {
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              if (currentRide) {
-                const completed = toCompletedRide(currentRide);
-                setTransactions((prev) => [buildWalletTransactionFromRide(completed, activeDriver.name), ...prev]);
-              }
-              setRideStatus('idle');
-              setShowRating(true);
-            }}
-            className="mt-5 min-h-[3.25rem] w-full rounded-xl bg-slate-900 py-3.5 text-sm font-bold text-white"
-          >
-            {IS_DEV_UI ? 'Simulate trip completion' : 'Complete trip'}
-          </button>
+          {USE_MOCK_API && (
+            <button
+              type="button"
+              onClick={() => {
+                if (currentRide) {
+                  const completed = toCompletedRide(currentRide);
+                  setTransactions((prev) => [buildWalletTransactionFromRide(completed, activeDriver.name), ...prev]);
+                }
+                setRideStatus('idle');
+                setShowRating(true);
+              }}
+              className="mt-5 min-h-[3.25rem] w-full rounded-xl bg-slate-900 py-3.5 text-sm font-bold text-white"
+            >
+              {IS_DEV_UI ? 'Simulate trip completion' : 'Complete trip'}
+            </button>
+          )}
         </div>
       )}
     </>

@@ -1,0 +1,80 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Matches `RideStatus` in `common/enums/ride-status.enum.ts`
+enum RideStatus {
+  pending
+  matching
+  driver_assigned
+  driver_arrived
+  in_progress
+  completed
+  cancelled
+}
+
+model User {
+  id    String  @id
+  phone String?
+  name  String?
+  role  String
+
+  ridesAsRider  Ride[] @relation("RiderRides")
+  ridesAsDriver Ride[] @relation("DriverRides")
+}
+
+/// Single demo driver row — online flag for matching (same semantics as in-memory `driverOnline`).
+model Driver {
+  id     String  @id
+  online Boolean @default(false)
+}
+
+model Ride {
+  id                 String     @id
+  riderId            String?
+  driverId           String?
+  status             RideStatus
+  pickup             String
+  destination        String
+  pickupAddress      String
+  destinationAddress String
+  pickupCoords       Json?
+  destinationCoords  Json?
+  stops              Json
+  vehicleType        String
+  profileType        String
+  scheduledDate      String?
+  scheduledTime      String?
+  createdAt          DateTime
+  updatedAt          DateTime
+  distanceMeters     Float?
+  durationSeconds    Int?
+  fareEstimate       Json?
+
+  rider User?  @relation("RiderRides", fields: [riderId], references: [id])
+  driver User? @relation("DriverRides", fields: [driverId], references: [id])
+  offer  Offer?
+  trips  Trip[]
+}
+
+model Offer {
+  requestId   String  @id
+  rideId      String? @unique
+  pickup      String
+  destination String
+  earning     String
+  ride        Ride?   @relation(fields: [rideId], references: [id], onDelete: Cascade)
+}
+
+model Trip {
+  id        String   @id
+  rideId    String
+  driverId  String?
+  startedAt DateTime
+  ride      Ride     @relation(fields: [rideId], references: [id], onDelete: Cascade)
+}

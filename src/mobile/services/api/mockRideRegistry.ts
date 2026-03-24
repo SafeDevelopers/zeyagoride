@@ -35,6 +35,8 @@ function applyTimeProgress(ride: RideSummary): RideSummary {
   const id = ride.id;
   const t = rideAcceptedAt.get(id);
   if (!t) return cloneRideSummary(ride);
+  /** Wall-clock demo phases only when demo auto-progress is enabled; otherwise follow explicit API/driver transitions. */
+  if (!DEMO_AUTO_TRIP_PROGRESS) return cloneRideSummary(ride);
   return applyPostAcceptElapsed(ride, Date.now() - t);
 }
 
