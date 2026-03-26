@@ -1,4 +1,5 @@
-import { IsString } from 'class-validator';
+import { IsEnum, IsOptional, IsString } from 'class-validator';
+import { SessionUserRole } from '../../common/enums/session-user-role.enum';
 
 export class VerifyOtpDto {
   @IsString()
@@ -6,4 +7,8 @@ export class VerifyOtpDto {
 
   @IsString()
   code!: string;
+
+  @IsOptional()
+  @IsEnum(SessionUserRole)
+  role?: SessionUserRole;
 }

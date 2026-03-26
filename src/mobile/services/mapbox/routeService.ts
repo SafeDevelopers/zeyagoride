@@ -5,6 +5,8 @@
  * TODO: surge / dynamic pricing hooks.
  * TODO: server-side fare validation before confirming ride.
  */
+import { MAPBOX_ACCESS_TOKEN } from '../../config/env';
+import { appSettingsService } from '../api/appSettingsService';
 import type { LatLng, RideStop, VehicleType } from '../../types/api';
 import type { FareEstimate, RouteEstimate, RoutePoint } from '../../types/route';
 
@@ -83,32 +85,136 @@ export async function getRouteEstimate(input: GetRouteEstimateInput): Promise<Ro
   return Promise.resolve(getRouteEstimateMock(input));
 }
 
-/** Base + per-km by vehicle (mock pricing curve). */
-const FARE_BY_VEHICLE: Record<
-  VehicleType,
-  { base: number; perKm: number }
-> = {
-  economy: { base: 35, perKm: 11 },
-  basic: { base: 42, perKm: 13 },
-  classic: { base: 48, perKm: 15 },
-  electric: { base: 52, perKm: 16 },
-  minivan: { base: 70, perKm: 22 },
-  executive: { base: 95, perKm: 28 },
-  hourly: { base: 0, perKm: 0 },
+function interpolateLatLng(a: LatLng, b: LatLng, t: number): LatLng {
+  return {
+    latitude: a.latitude + (b.latitude - a.latitude) * t,
+    longitude: a.longitude + (b.longitude - a.longitude) * t,
+  };
+}
+
+/**
+ * Smooth polyline along waypoint sequence when road geometry is unavailable (or driver→pickup leg).
+ */
+export function densifyStraightLineWaypoints(
+  waypoints: LatLng[],
+  stepsPerSegment = 12,
+): [number, number][] {
+  if (waypoints.length < 2) return [];
+  const out: [number, number][] = [];
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const a = waypoints[i]!;
+    const b = waypoints[i + 1]!;
+    for (let s = 0; s < stepsPerSegment; s++) {
+      const t = s / stepsPerSegment;
+      const p = interpolateLatLng(a, b, t);
+      out.push([p.longitude, p.latitude]);
+    }
+  }
+  const last = waypoints[waypoints.length - 1]!;
+  out.push([last.longitude, last.latitude]);
+  return out;
+}
+
+/**
+ * Mapbox Directions v5 — full route geometry (GeoJSON coordinates [lng, lat][]).
+ * Up to 25 waypoints per request.
+ */
+async function fetchMapboxDirectionsCoordinates(waypoints: LatLng[]): Promise<[number, number][] | null> {
+  if (waypoints.length < 2 || !MAPBOX_ACCESS_TOKEN) return null;
+  const capped = waypoints.slice(0, 25);
+  const pathPart = capped.map((w) => `${w.longitude},${w.latitude}`).join(';');
+  const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${encodeURIComponent(
+    pathPart,
+  )}?alternatives=false&geometries=geojson&overview=full&access_token=${encodeURIComponent(
+    MAPBOX_ACCESS_TOKEN,
+  )}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      routes?: { geometry?: { coordinates?: [number, number][] } }[];
+    };
+    const coords = data.routes?.[0]?.geometry?.coordinates;
+    if (!coords || coords.length < 2) return null;
+    return coords;
+  } catch {
+    return null;
+  }
+}
+
+export type ResolvedMapPolyline = {
+  coordinates: [number, number][];
+  source: RouteEstimate['source'];
 };
 
 /**
- * Turn routed distance/time into a display fare (mock).
- * TODO: surge, promos, backend quote.
+ * Polyline for map drawing: Mapbox road geometry when allowed, else densified straight-line.
+ * `useDirections: false` avoids API churn for the live driver→pickup leg (GPS updates often).
  */
-export function calculateFareEstimate(routeEstimate: RouteEstimate, vehicleType: VehicleType): FareEstimate {
+export async function resolveRoutePolylineForMap(
+  waypoints: LatLng[],
+  options?: { useDirections?: boolean },
+): Promise<ResolvedMapPolyline> {
+  const useDirections = options?.useDirections !== false;
+  if (waypoints.length < 2) {
+    return { coordinates: [], source: 'mock_straight_line' };
+  }
+  if (!useDirections || !MAPBOX_ACCESS_TOKEN) {
+    return {
+      coordinates: densifyStraightLineWaypoints(waypoints),
+      source: 'mock_straight_line',
+    };
+  }
+  const road = await fetchMapboxDirectionsCoordinates(waypoints);
+  if (road && road.length >= 2) {
+    return { coordinates: road, source: 'mapbox_directions' };
+  }
+  return {
+    coordinates: densifyStraightLineWaypoints(waypoints),
+    source: 'mock_straight_line',
+  };
+}
+
+/** Preserve current category differences while using backend pricing as the base rate card. */
+const VEHICLE_RATE_MULTIPLIER: Record<VehicleType, number> = {
+  economy: 1,
+  basic: 1.18,
+  classic: 1.36,
+  electric: 1.45,
+  minivan: 2,
+  executive: 2.55,
+  hourly: 0,
+};
+
+/**
+ * Turn routed distance/time into a display fare using persisted backend pricing settings.
+ * TODO: apply persisted promo settings to ride estimates where desired.
+ * TODO: server-side fare validation / quote locking before confirming ride.
+ */
+export async function calculateFareEstimate(
+  routeEstimate: RouteEstimate,
+  vehicleType: VehicleType,
+): Promise<FareEstimate> {
   if (vehicleType === 'hourly') {
     return { currency: 'ETB', amount: 800, formatted: 'ETB 800' };
   }
+  const pricing = await appSettingsService
+    .getPricingSettings()
+    .catch(() => ({
+      baseFare: 35,
+      perKmRate: 11,
+      perMinuteRate: 2,
+      minimumFare: 25,
+      cancellationFee: 20,
+    }));
   const km = routeEstimate.distanceMeters / 1000;
-  const { base, perKm } = FARE_BY_VEHICLE[vehicleType];
-  const raw = base + km * perKm;
-  const amount = Math.max(25, Math.round(raw / 5) * 5);
+  const minutes = routeEstimate.durationSeconds / 60;
+  const multiplier = VEHICLE_RATE_MULTIPLIER[vehicleType] ?? 1;
+  const raw =
+    (pricing.baseFare + km * pricing.perKmRate + minutes * pricing.perMinuteRate) *
+    multiplier;
+  const minimum = pricing.minimumFare * multiplier;
+  const amount = Math.max(minimum, Math.round(raw / 5) * 5);
   return {
     currency: 'ETB',
     amount,

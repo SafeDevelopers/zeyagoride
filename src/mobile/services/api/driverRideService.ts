@@ -1,12 +1,20 @@
 import type {
   AcceptRideRequest,
   AcceptRideResponse,
+  CompleteTripBody,
   DeclineRideRequest,
   DeclineRideResponse,
   DriverAvailabilityRequest,
   DriverAvailabilityResponse,
+  DriverVehicleUpdateRequest,
+  DriverProfile,
+  DriverWalletSnapshot,
   GetTripResponse,
+  ListDriverNotificationsResponse,
   ListDriverRequestsResponse,
+  ListDriverTopUpRequestsResponse,
+  ListDriverWalletTransactionsResponse,
+  SubmitTopUpRequest,
 } from '../../types/api';
 import { USE_MOCK_API } from '../../config/env';
 import {
@@ -16,7 +24,7 @@ import {
   adaptListDriverRequestsResponse,
 } from './adapters';
 import { shouldDevFallbackToMock } from './devFallback';
-import { request } from './client';
+import { request, requestMultipartJson } from './client';
 import { delay } from './delay';
 import { endpoints } from './endpoints';
 import {
@@ -29,13 +37,22 @@ import {
 
 export type DriverRideService = {
   setDriverOnline(online: boolean): Promise<DriverAvailabilityResponse>;
+  getProfile(): Promise<DriverProfile>;
   acceptRide(payload: AcceptRideRequest): Promise<AcceptRideResponse>;
   declineRide(payload: DeclineRideRequest): Promise<DeclineRideResponse>;
   listIncomingRequests(): Promise<ListDriverRequestsResponse>;
   getTrip(tripId: string): Promise<GetTripResponse>;
   tripArrive(tripId: string): Promise<GetTripResponse>;
   tripStart(tripId: string): Promise<GetTripResponse>;
-  tripComplete(tripId: string): Promise<GetTripResponse>;
+  tripComplete(tripId: string, body?: CompleteTripBody): Promise<GetTripResponse>;
+  getWallet(): Promise<DriverWalletSnapshot>;
+  updateVehicle(payload: DriverVehicleUpdateRequest): Promise<{ vehicle: { status: string } }>;
+  listWalletTransactions(): Promise<ListDriverWalletTransactionsResponse>;
+  submitTopUpRequest(payload: SubmitTopUpRequest): Promise<{ id: string }>;
+  listTopUpRequests(): Promise<ListDriverTopUpRequestsResponse>;
+  uploadTopUpProof(requestId: string, file: File): Promise<{ proofUrl: string }>;
+  listNotifications(): Promise<ListDriverNotificationsResponse>;
+  markNotificationsRead(ids?: string[]): Promise<{ updated: number }>;
 };
 
 /**
@@ -45,6 +62,28 @@ export const mockDriverRideService: DriverRideService = {
   async setDriverOnline(online: boolean): Promise<DriverAvailabilityResponse> {
     await delay(40);
     return { online };
+  },
+
+  async getProfile(): Promise<DriverProfile> {
+    await delay(30);
+    return {
+      id: 'placeholder-driver',
+      userId: 'placeholder-driver',
+      name: 'Demo Driver',
+      phone: '+251 911 223344',
+      online: false,
+      isVerified: false,
+      verificationStatus: 'pending',
+      vehicle: null,
+      canGoOnline: false,
+      onlineBlockingReasons: ['driver_account_not_approved', 'vehicle_missing'],
+      activeTripCount: 0,
+      walletBalance: 10_000,
+      walletMinBalance: 100,
+      walletWarningThreshold: 300,
+      walletBlocked: false,
+      walletBelowWarning: false,
+    };
   },
 
   async acceptRide(payload: AcceptRideRequest): Promise<AcceptRideResponse> {
@@ -81,9 +120,55 @@ export const mockDriverRideService: DriverRideService = {
     return mockTripAdvance(tripId, 'in_progress');
   },
 
-  async tripComplete(tripId: string): Promise<GetTripResponse> {
+  async tripComplete(tripId: string, _body?: CompleteTripBody): Promise<GetTripResponse> {
     await delay(35);
     return mockTripAdvance(tripId, 'completed');
+  },
+
+  async getWallet(): Promise<DriverWalletSnapshot> {
+    await delay(25);
+    return {
+      balance: 10_000,
+      minBalance: 100,
+      warningThreshold: 300,
+      blocked: false,
+      belowWarning: false,
+    };
+  },
+
+  async updateVehicle(): Promise<{ vehicle: { status: string } }> {
+    await delay(40);
+    return { vehicle: { status: 'pending' } };
+  },
+
+  async listWalletTransactions(): Promise<ListDriverWalletTransactionsResponse> {
+    await delay(25);
+    return { transactions: [] };
+  },
+
+  async submitTopUpRequest(_payload: SubmitTopUpRequest): Promise<{ id: string }> {
+    await delay(40);
+    return { id: `mock-topup-${Date.now()}` };
+  },
+
+  async listTopUpRequests(): Promise<ListDriverTopUpRequestsResponse> {
+    await delay(25);
+    return { requests: [] };
+  },
+
+  async uploadTopUpProof(): Promise<{ proofUrl: string }> {
+    await delay(40);
+    return { proofUrl: 'https://example.com/proof' };
+  },
+
+  async listNotifications(): Promise<ListDriverNotificationsResponse> {
+    await delay(25);
+    return { notifications: [] };
+  },
+
+  async markNotificationsRead(): Promise<{ updated: number }> {
+    await delay(20);
+    return { updated: 0 };
   },
 };
 
@@ -93,6 +178,10 @@ function createDriverRideApiService(): DriverRideService {
       const body: DriverAvailabilityRequest = { online };
       const raw = await request<unknown>('PUT', endpoints.driver.availability(), body);
       return adaptDriverAvailabilityResponse(raw, online);
+    },
+
+    async getProfile(): Promise<DriverProfile> {
+      return request<DriverProfile>('GET', endpoints.driver.profile());
     },
 
     async acceptRide(payload: AcceptRideRequest): Promise<AcceptRideResponse> {
@@ -129,9 +218,56 @@ function createDriverRideApiService(): DriverRideService {
       return adaptGetTripResponse(raw);
     },
 
-    async tripComplete(tripId: string): Promise<GetTripResponse> {
-      const raw = await request<unknown>('POST', endpoints.driver.tripComplete(tripId));
+    async tripComplete(tripId: string, body?: CompleteTripBody): Promise<GetTripResponse> {
+      const raw = await request<unknown>(
+        'POST',
+        endpoints.driver.tripComplete(tripId),
+        body ?? {},
+      );
       return adaptGetTripResponse(raw);
+    },
+
+    async getWallet(): Promise<DriverWalletSnapshot> {
+      return request<DriverWalletSnapshot>('GET', endpoints.driver.wallet());
+    },
+
+    async updateVehicle(payload: DriverVehicleUpdateRequest): Promise<{ vehicle: { status: string } }> {
+      return request<{ vehicle: { status: string } }>('PUT', endpoints.driver.vehicle(), payload);
+    },
+
+    async listWalletTransactions(): Promise<ListDriverWalletTransactionsResponse> {
+      return request<ListDriverWalletTransactionsResponse>(
+        'GET',
+        endpoints.driver.walletTransactions(),
+      );
+    },
+
+    async submitTopUpRequest(payload: SubmitTopUpRequest): Promise<{ id: string }> {
+      return request<{ id: string }>('POST', endpoints.driver.walletTopUpRequests(), payload);
+    },
+
+    async listTopUpRequests(): Promise<ListDriverTopUpRequestsResponse> {
+      return request<ListDriverTopUpRequestsResponse>('GET', endpoints.driver.walletTopUpRequests());
+    },
+
+    async uploadTopUpProof(requestId: string, file: File): Promise<{ proofUrl: string }> {
+      const fd = new FormData();
+      fd.append('proof', file);
+      return requestMultipartJson<{ proofUrl: string }>(
+        'PUT',
+        endpoints.driver.walletTopUpProof(requestId),
+        fd,
+      );
+    },
+
+    async listNotifications(): Promise<ListDriverNotificationsResponse> {
+      return request<ListDriverNotificationsResponse>('GET', endpoints.driver.notifications());
+    },
+
+    async markNotificationsRead(ids?: string[]): Promise<{ updated: number }> {
+      return request<{ updated: number }>('PUT', endpoints.driver.notificationsRead(), {
+        ids: ids?.length ? ids : undefined,
+      });
     },
   };
 }
@@ -144,6 +280,14 @@ function createDriverRideApiServiceWithDevFallback(): DriverRideService {
         return await api.setDriverOnline(online);
       } catch (e) {
         if (shouldDevFallbackToMock(e)) return mockDriverRideService.setDriverOnline(online);
+        throw e;
+      }
+    },
+    async getProfile(): Promise<DriverProfile> {
+      try {
+        return await api.getProfile();
+      } catch (e) {
+        if (shouldDevFallbackToMock(e)) return mockDriverRideService.getProfile();
         throw e;
       }
     },
@@ -195,11 +339,75 @@ function createDriverRideApiServiceWithDevFallback(): DriverRideService {
         throw e;
       }
     },
-    async tripComplete(tripId: string): Promise<GetTripResponse> {
+    async tripComplete(tripId: string, body?: CompleteTripBody): Promise<GetTripResponse> {
       try {
-        return await api.tripComplete(tripId);
+        return await api.tripComplete(tripId, body);
       } catch (e) {
-        if (shouldDevFallbackToMock(e)) return mockDriverRideService.tripComplete(tripId);
+        if (shouldDevFallbackToMock(e)) return mockDriverRideService.tripComplete(tripId, body);
+        throw e;
+      }
+    },
+    async getWallet(): Promise<DriverWalletSnapshot> {
+      try {
+        return await api.getWallet();
+      } catch (e) {
+        if (shouldDevFallbackToMock(e)) return mockDriverRideService.getWallet();
+        throw e;
+      }
+    },
+    async updateVehicle(payload: DriverVehicleUpdateRequest): Promise<{ vehicle: { status: string } }> {
+      try {
+        return await api.updateVehicle(payload);
+      } catch (e) {
+        if (shouldDevFallbackToMock(e)) return mockDriverRideService.updateVehicle(payload);
+        throw e;
+      }
+    },
+    async listWalletTransactions(): Promise<ListDriverWalletTransactionsResponse> {
+      try {
+        return await api.listWalletTransactions();
+      } catch (e) {
+        if (shouldDevFallbackToMock(e)) return mockDriverRideService.listWalletTransactions();
+        throw e;
+      }
+    },
+    async submitTopUpRequest(payload: SubmitTopUpRequest): Promise<{ id: string }> {
+      try {
+        return await api.submitTopUpRequest(payload);
+      } catch (e) {
+        if (shouldDevFallbackToMock(e)) return mockDriverRideService.submitTopUpRequest(payload);
+        throw e;
+      }
+    },
+    async listTopUpRequests(): Promise<ListDriverTopUpRequestsResponse> {
+      try {
+        return await api.listTopUpRequests();
+      } catch (e) {
+        if (shouldDevFallbackToMock(e)) return mockDriverRideService.listTopUpRequests();
+        throw e;
+      }
+    },
+    async uploadTopUpProof(requestId: string, file: File): Promise<{ proofUrl: string }> {
+      try {
+        return await api.uploadTopUpProof(requestId, file);
+      } catch (e) {
+        if (shouldDevFallbackToMock(e)) return mockDriverRideService.uploadTopUpProof(requestId, file);
+        throw e;
+      }
+    },
+    async listNotifications(): Promise<ListDriverNotificationsResponse> {
+      try {
+        return await api.listNotifications();
+      } catch (e) {
+        if (shouldDevFallbackToMock(e)) return mockDriverRideService.listNotifications();
+        throw e;
+      }
+    },
+    async markNotificationsRead(ids?: string[]): Promise<{ updated: number }> {
+      try {
+        return await api.markNotificationsRead(ids);
+      } catch (e) {
+        if (shouldDevFallbackToMock(e)) return mockDriverRideService.markNotificationsRead(ids);
         throw e;
       }
     },

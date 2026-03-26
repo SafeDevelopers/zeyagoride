@@ -4,7 +4,13 @@ import type { FareEstimate } from './route';
 
 export type AppMode = 'rider' | 'driver';
 
-export type AuthStep = 'welcome' | 'phone' | 'otp' | 'home';
+export type AuthStep =
+  | 'welcome'
+  | 'phone'
+  | 'otp'
+  | 'rider_register'
+  | 'driver_register'
+  | 'home';
 
 /** Rider UI trip phase — not the API `RideStatus` in `types/api`. */
 export type RideStatus = 'idle' | 'searching' | 'found' | 'arrived' | 'ongoing' | 'completed';

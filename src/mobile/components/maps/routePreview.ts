@@ -1,18 +1,37 @@
 import type { LatLng } from '../../types/api';
-import type { RoutePreviewInput } from './types';
+import type { MapboxRoutePolylineSegment, RoutePreviewInput } from './types';
 
 /**
  * Ordered WGS84 [lng, lat] for a straight-line preview (skips null coords).
- * TODO(Mapbox): replace polyline with Directions API route geometry; add ETA/distance from Matrix/Directions.
+ * Used where segment is not yet applied (legacy callers) or for quick sync fallback.
  */
 export function buildRoutePreviewCoordinates(input: RoutePreviewInput): [number, number][] {
   const { pickupCoords, destinationCoords, stops } = input;
-  const coords: [number, number][] = [];
-  const push = (ll: LatLng) => coords.push([ll.longitude, ll.latitude]);
-  if (pickupCoords) push(pickupCoords);
-  for (const s of stops) {
-    if (s.coords) push(s.coords);
+  const seq = buildTripWaypointSequence('full_trip', null, pickupCoords, destinationCoords, stops);
+  return seq.map((ll) => [ll.longitude, ll.latitude] as [number, number]);
+}
+
+/**
+ * Ordered trip waypoints for routing (WGS84). Drives Directions API + map polyline.
+ */
+export function buildTripWaypointSequence(
+  segment: MapboxRoutePolylineSegment,
+  driverCoords: LatLng | null,
+  pickupCoords: LatLng | null,
+  destinationCoords: LatLng | null,
+  stops: RoutePreviewInput['stops'],
+): LatLng[] {
+  if (segment === 'driver_to_pickup') {
+    const out: LatLng[] = [];
+    if (driverCoords) out.push(driverCoords);
+    if (pickupCoords) out.push(pickupCoords);
+    return out;
   }
-  if (destinationCoords) push(destinationCoords);
-  return coords;
+  const seq: LatLng[] = [];
+  if (pickupCoords) seq.push(pickupCoords);
+  for (const s of stops) {
+    if (s.coords) seq.push(s.coords);
+  }
+  if (destinationCoords) seq.push(destinationCoords);
+  return seq;
 }

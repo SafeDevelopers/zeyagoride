@@ -35,4 +35,8 @@ export type FareEstimate = {
   amount: number;
   /** e.g. "ETB 142" */
   formatted: string;
+  originalFare?: number;
+  discountAmount?: number;
+  finalFare?: number;
+  promoCode?: string;
 };

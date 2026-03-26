@@ -9,6 +9,7 @@ const KEY_SESSION = 'zeyago_mobile_session';
 export type PersistedSessionSnapshot = {
   user: SessionUser;
   expiresAt: string;
+  registrationRequired?: boolean;
 };
 
 /** @deprecated Use `PersistedSessionSnapshot` — kept for external references. */
@@ -66,9 +67,14 @@ function migrateLegacyToPersisted(legacy: LegacySnapshotV1): PersistedSessionSna
       id: 'legacy-user',
       phone: `+251${local}`,
       name: legacy.displayName,
+      firstName: legacy.displayName.split(' ')[0] ?? legacy.displayName,
+      lastName: legacy.displayName.split(' ').slice(1).join(' '),
+      email: '',
+      address: '',
       role: 'rider',
     },
     expiresAt: new Date(Date.now() + 86400e3 * 365).toISOString(),
+    registrationRequired: false,
   };
 }
 
@@ -87,7 +93,17 @@ function normalizeStoredSession(parsed: unknown): PersistedSessionSnapshot | nul
     typeof o.user.role === 'string' &&
     typeof o.expiresAt === 'string'
   ) {
-    return o;
+    return {
+      ...o,
+      user: {
+        ...o.user,
+        firstName: typeof o.user.firstName === 'string' ? o.user.firstName : '',
+        lastName: typeof o.user.lastName === 'string' ? o.user.lastName : '',
+        email: typeof o.user.email === 'string' ? o.user.email : '',
+        address: typeof o.user.address === 'string' ? o.user.address : '',
+      },
+      registrationRequired: Boolean((o as { registrationRequired?: unknown }).registrationRequired),
+    };
   }
   return null;
 }
@@ -106,6 +122,16 @@ export function getSessionSnapshot(): PersistedSessionSnapshot | null {
 export function setSessionSnapshot(snapshot: PersistedSessionSnapshot): void {
   if (!canUseStorage()) return;
   window.localStorage.setItem(KEY_SESSION, JSON.stringify(snapshot));
+}
+
+export function updateStoredUser(user: SessionUser): void {
+  const snapshot = getSessionSnapshot();
+  if (!snapshot) return;
+  setSessionSnapshot({
+    ...snapshot,
+    user,
+    registrationRequired: false,
+  });
 }
 
 export function getExpiresAt(): string | null {
@@ -139,7 +165,7 @@ function phoneDigitsFromUserPhone(phone: string): string {
   return d;
 }
 
-function formatPhoneForDisplay(phone: string): string {
+export function formatPhoneForDisplay(phone: string): string {
   const d = phone.replace(/\D/g, '');
   const local =
     d.length >= 12 && d.startsWith('251') ? d.slice(3) : d.length >= 9 ? d.slice(-9) : '';
@@ -151,7 +177,12 @@ const DEFAULT_NAME = 'Felix M.';
 const DEFAULT_PHONE_DISPLAY = '+251 911 223344';
 
 export function getInitialAuthStep(): AuthStep {
-  return hasPersistedSession() ? 'home' : 'welcome';
+  const snap = getSessionSnapshot();
+  if (!hasPersistedSession() || !snap?.user) return 'welcome';
+  if (snap.registrationRequired) {
+    return snap.user.role === 'driver' ? 'driver_register' : 'rider_register';
+  }
+  return 'home';
 }
 
 export function getInitialPhoneDigits(): string {
@@ -161,6 +192,16 @@ export function getInitialPhoneDigits(): string {
 
 export function getInitialUserName(): string {
   return getStoredUser()?.name ?? DEFAULT_NAME;
+}
+
+export function getInitialProfileFields() {
+  const user = getStoredUser();
+  return {
+    firstName: user?.firstName ?? '',
+    lastName: user?.lastName ?? '',
+    email: user?.email ?? '',
+    address: user?.address ?? '',
+  };
 }
 
 export function getInitialUserPhoneDisplay(): string {
@@ -180,5 +221,6 @@ export function persistSessionAfterVerify(verify: VerifyOtpResponse): void {
   setSessionSnapshot({
     user: verify.user,
     expiresAt: verify.expiresAt,
+    registrationRequired: verify.registrationRequired,
   });
 }

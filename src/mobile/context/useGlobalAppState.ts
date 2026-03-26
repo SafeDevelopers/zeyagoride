@@ -1,18 +1,23 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useLanguage } from './LanguageContext';
 import { advanceAuthStep } from '../utils/authFlow';
 import { authService } from '../services/api';
+import { appSettingsService } from '../services/api/appSettingsService';
 import {
   clearMobileSession,
   getInitialAuthStep,
   getInitialEditName,
   getInitialPhoneDigits,
+  getInitialProfileFields,
   getInitialUserName,
   getInitialUserPhoneDisplay,
+  formatPhoneForDisplay,
+  getStoredUser,
 } from '../services/sessionStorage';
 import { INITIAL_NOTIFICATIONS } from '../constants/appDefaults';
 import { initRideNotifications } from '../services/rides/rideNotifications';
+import type { SessionUser } from '../types/api';
 import type { AppMode, AuthStep, SupportStep } from '../types/mobile';
 
 export function useGlobalAppState() {
@@ -27,11 +32,14 @@ export function useGlobalAppState() {
   const [showRating, setShowRating] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [showDriverProfile, setShowDriverProfile] = useState(false);
+  const [showDriverWallet, setShowDriverWallet] = useState(false);
   const [rating, setRating] = useState(0);
   const [hoverRating, setHoverRating] = useState(0);
 
   const [userName, setUserName] = useState(() => getInitialUserName());
   const [userPhone, setUserPhone] = useState(() => getInitialUserPhoneDisplay());
+  const [currentUser, setCurrentUser] = useState<SessionUser | null>(() => getStoredUser());
+  const [profileFields, setProfileFields] = useState(() => getInitialProfileFields());
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [editName, setEditName] = useState(() => getInitialEditName());
 
@@ -47,6 +55,7 @@ export function useGlobalAppState() {
   const [showRewards, setShowRewards] = useState(false);
   const [showBusinessSetup, setShowBusinessSetup] = useState(false);
   const [showPinVerification, setShowPinVerification] = useState(false);
+  const [requireRideSafetyPin, setRequireRideSafetyPin] = useState(true);
 
   const [showEarningsAnalytics, setShowEarningsAnalytics] = useState(false);
   const [showVehicleManagement, setShowVehicleManagement] = useState(false);
@@ -68,7 +77,11 @@ export function useGlobalAppState() {
   const [payoutMethod, setPayoutMethod] = useState('telebirr');
   const [showPromos, setShowPromos] = useState(false);
   const [promoCode, setPromoCode] = useState('');
-  const [activePromo, setActivePromo] = useState<{ code: string; discount: number } | null>(null);
+  const [activePromo, setActivePromo] = useState<{
+    code: string;
+    discount: number;
+    discountType: 'fixed' | 'percent';
+  } | null>(null);
   const [promoError, setPromoError] = useState('');
   const [showScheduledRides, setShowScheduledRides] = useState(false);
   const [showTrainingAcademy, setShowTrainingAcademy] = useState(false);
@@ -97,12 +110,28 @@ export function useGlobalAppState() {
     return initRideNotifications(setNotifications);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    void appSettingsService
+      .getSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setRequireRideSafetyPin(settings.requireRideSafetyPin);
+      })
+      .catch(() => {
+        /* keep safe default */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const handleNextStep = () => advanceAuthStep(step, setStep, setResendCooldown);
 
   const handleResendOtp = async () => {
     if (resendCooldown === 0) {
       setResendCooldown(30);
-      await authService.loginWithPhone(phone);
+      await authService.loginWithPhone(phone, mode);
     }
   };
 
@@ -118,6 +147,19 @@ export function useGlobalAppState() {
     setIsMenuOpen(false);
   };
 
+  const applyCurrentUser = useCallback((user: SessionUser) => {
+    setCurrentUser(user);
+    setUserName(user.name);
+    setUserPhone(formatPhoneForDisplay(user.phone));
+    setEditName(user.name);
+    setProfileFields({
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      address: user.address,
+    });
+  }, []);
+
   const handleLogout = () => {
     clearMobileSession();
     setShowSettings(false);
@@ -127,6 +169,8 @@ export function useGlobalAppState() {
     setOtp(['', '', '', '']);
     setUserName('Felix M.');
     setUserPhone('+251 911 223344');
+    setCurrentUser(null);
+    setProfileFields({ firstName: '', lastName: '', email: '', address: '' });
     setEditName('Felix M.');
   };
 
@@ -153,6 +197,8 @@ export function useGlobalAppState() {
     setShowProfile,
     showDriverProfile,
     setShowDriverProfile,
+    showDriverWallet,
+    setShowDriverWallet,
     rating,
     setRating,
     hoverRating,
@@ -161,6 +207,11 @@ export function useGlobalAppState() {
     setUserName,
     userPhone,
     setUserPhone,
+    currentUser,
+    setCurrentUser,
+    applyCurrentUser,
+    profileFields,
+    setProfileFields,
     isEditingProfile,
     setIsEditingProfile,
     editName,
@@ -189,6 +240,8 @@ export function useGlobalAppState() {
     setShowBusinessSetup,
     showPinVerification,
     setShowPinVerification,
+    requireRideSafetyPin,
+    setRequireRideSafetyPin,
     showEarningsAnalytics,
     setShowEarningsAnalytics,
     showVehicleManagement,

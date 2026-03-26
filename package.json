@@ -4,7 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "start": "npm run dev",
     "dev": "tsx server.ts",
+    "backend:dev": "npm run start:dev --prefix backend",
+    "backend:build": "npm run build --prefix backend",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",

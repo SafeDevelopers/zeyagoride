@@ -1,6 +1,6 @@
 import { ChevronRight, Clock, FileText, Camera, User, CreditCard, Car, CheckCircle } from '../lucideIcons';
 import { useMobileApp } from '../../context/MobileAppContext';
-import { IS_DEV_UI } from '../../utils/devUi';
+import { driverRideService } from '../../services/api';
 
 export function DriverVerificationScreen() {
   const {
@@ -153,10 +153,16 @@ export function DriverVerificationScreen() {
                   </div>
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-400">Tag (Plate) Number</label>
+                  <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-400">
+                    Plate / tag number (type exactly as on your vehicle)
+                  </label>
                   <input
                     type="text"
-                    placeholder="e.g. AA 2-B12345"
+                    inputMode="text"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    placeholder="Enter your exact plate or tag number"
                     className="w-full rounded-2xl border border-slate-100 bg-slate-50 p-4 font-bold text-slate-900 outline-none focus:border-velox-primary"
                     value={vehicleDetails.tagNumber}
                     onChange={(e) => setVehicleDetails({ ...vehicleDetails, tagNumber: e.target.value })}
@@ -238,14 +244,21 @@ export function DriverVerificationScreen() {
           </p>
           <button
             type="button"
-            onClick={() => {
-              setIsVerified(true);
-              setVerificationStep('start');
-              setMode('driver');
+            onClick={async () => {
+              try {
+                const profile = await driverRideService.getProfile();
+                setIsVerified(profile.isVerified);
+                if (profile.isVerified) {
+                  setVerificationStep('start');
+                  setMode('driver');
+                }
+              } catch {
+                /* keep waiting state */
+              }
             }}
             className="min-h-[3.25rem] w-full max-w-sm rounded-2xl bg-velox-primary py-4 font-bold text-white shadow-lg shadow-[0_8px_24px_rgba(75,44,109,0.18)]"
           >
-            {IS_DEV_UI ? 'Simulate approval (demo)' : 'Continue to drive'}
+            Check verification status
           </button>
         </div>
       )}

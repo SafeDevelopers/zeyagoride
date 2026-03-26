@@ -4,6 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  /// Runtime + migrations. When your host uses a pooler (e.g. PgBouncer), add `directUrl = env("DIRECT_URL")` here and set `DIRECT_URL` to a direct connection — see SETUP_ENV.md.
   url      = env("DATABASE_URL")
 }
 
@@ -18,20 +19,272 @@ enum RideStatus {
   cancelled
 }
 
+enum PaymentStatus {
+  unpaid
+  pending
+  authorized
+  paid
+  failed
+  refunded
+}
+
+/// How the rider paid the driver at trip end (cash-first; recorded on ride completion).
+enum RidePaymentMethod {
+  cash
+  bank
+  telebirr
+}
+
+enum WalletTransactionType {
+  credit
+  debit
+  commission
+}
+
+enum TopUpMethod {
+  telebirr
+  bank
+  /// Cash paid at office — same approval flow as other top-ups.
+  cash
+}
+
+enum TopUpStatus {
+  pending
+  approved
+  rejected
+}
+
+/// Persistent driver-facing events (wallet, top-ups, commissions).
+enum DriverNotificationType {
+  low_balance_warning
+  wallet_blocked
+  top_up_approved
+  top_up_rejected
+  commission_deducted
+  new_ride_request
+  ride_cancelled
+}
+
+/// Persistent rider-facing ride updates (in-app inbox).
+enum RiderNotificationType {
+  driver_assigned
+  driver_arrived
+  trip_started
+  trip_completed
+  ride_cancelled
+}
+
+enum NotificationRecipientType {
+  rider
+  driver
+}
+
+/// Delivery channel for outbound notifications (in-app row is separate; this tracks external pipes).
+enum NotificationChannel {
+  in_app
+  sms
+  push
+}
+
+enum NotificationDeliveryStatus {
+  pending
+  delivered
+  failed
+  skipped
+}
+
+/// Canonical event name for dispatch / auditing (mirrors in-app types where applicable).
+enum NotificationEventType {
+  low_balance_warning
+  wallet_blocked
+  top_up_approved
+  top_up_rejected
+  commission_deducted
+  new_ride_request
+  ride_cancelled
+  driver_assigned
+  driver_arrived
+  trip_started
+  trip_completed
+}
+
+enum VehicleApprovalStatus {
+  pending
+  approved
+  rejected
+}
+
 model User {
-  id    String  @id
-  phone String?
-  name  String?
-  role  String
+  id        String   @id
+  phone     String?
+  name      String?
+  firstName String?
+  lastName  String?
+  email     String?  @unique
+  address   String?
+  role      String
+  registrationCompleted Boolean @default(false)
+  createdAt DateTime @default(now())
 
   ridesAsRider  Ride[] @relation("RiderRides")
   ridesAsDriver Ride[] @relation("DriverRides")
+  riderNotifications RiderNotification[]
+  authSessions      AuthSession[]
+  adminAuditLogs    AdminAuditLog[] @relation("AdminAuditActor")
+  reviewedVehicles  DriverVehicle[] @relation("VehicleReviewedBy")
 }
 
 /// Single demo driver row — online flag for matching (same semantics as in-memory `driverOnline`).
 model Driver {
-  id     String  @id
-  online Boolean @default(false)
+  id                 String   @id
+  online             Boolean  @default(false)
+  isVerified         Boolean  @default(false)
+  verificationStatus String   @default("pending")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  wallet            DriverWallet?
+  walletTransactions WalletTransaction[]
+  topUpRequests     TopUpRequest[]
+  notifications     DriverNotification[]
+  vehicle           DriverVehicle?
+}
+
+model DriverVehicle {
+  id              String               @id @default(cuid())
+  driverId        String               @unique
+  make            String
+  model           String
+  color           String
+  capacity        Int
+  tagNumber       String
+  insuranceExpiry String?
+  status          VehicleApprovalStatus @default(pending)
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  rejectionReason String?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  driver   Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  reviewer User?  @relation("VehicleReviewedBy", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  @@index([status, updatedAt])
+}
+
+model DriverWallet {
+  driverId          String @id
+  balance           Int    @default(0)
+  minBalance        Int    @default(100)
+  warningThreshold  Int    @default(300)
+  driver            Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+}
+
+model WalletTransaction {
+  id        String                @id @default(cuid())
+  driverId  String
+  type      WalletTransactionType
+  amount    Int
+  reason    String
+  rideId    String?
+  metadata  Json?
+  createdAt DateTime              @default(now())
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  ride   Ride?  @relation(fields: [rideId], references: [id], onDelete: SetNull)
+
+  @@index([driverId, createdAt])
+  @@index([rideId])
+  @@index([type])
+}
+
+model TopUpRequest {
+  id                String      @id @default(cuid())
+  driverId          String
+  amount            Int
+  method            TopUpMethod
+  reference         String
+  status            TopUpStatus @default(pending)
+  createdAt         DateTime    @default(now())
+  reviewedBy        String?
+  proofStorageKey   String?
+  proofContentType  String?
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId])
+  @@index([status])
+}
+
+model DriverNotification {
+  id        String                 @id @default(cuid())
+  driverId  String
+  type      DriverNotificationType
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime               @default(now())
+
+  driver            Driver              @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  notificationEvent NotificationEvent? @relation("DriverNotificationEvent")
+
+  @@index([driverId, createdAt])
+  @@index([driverId, readAt])
+}
+
+model RiderNotification {
+  id        String               @id @default(cuid())
+  riderId   String
+  type      RiderNotificationType
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime             @default(now())
+
+  rider             User               @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  notificationEvent NotificationEvent? @relation("RiderNotificationEvent")
+
+  @@index([riderId, createdAt])
+  @@index([riderId, readAt])
+}
+
+model NotificationEvent {
+  id                     String                   @id @default(cuid())
+  recipientType          NotificationRecipientType
+  recipientId            String
+  eventType              NotificationEventType
+  title                  String
+  body                   String
+  data                   Json?
+  driverNotificationId   String?                  @unique
+  riderNotificationId    String?                  @unique
+  createdAt              DateTime                 @default(now())
+
+  driverNotification DriverNotification? @relation("DriverNotificationEvent", fields: [driverNotificationId], references: [id], onDelete: SetNull)
+  riderNotification  RiderNotification? @relation("RiderNotificationEvent", fields: [riderNotificationId], references: [id], onDelete: SetNull)
+  deliveries         NotificationDelivery[]
+
+  @@index([recipientType, recipientId, createdAt])
+  @@index([eventType, createdAt])
+}
+
+model NotificationDelivery {
+  id                  String                   @id @default(cuid())
+  notificationEventId String
+  channel             NotificationChannel
+  status              NotificationDeliveryStatus @default(pending)
+  providerReference   String?
+  errorMessage        String?
+  attemptedAt         DateTime?
+  deliveredAt         DateTime?
+  createdAt           DateTime                 @default(now())
+
+  notificationEvent NotificationEvent @relation(fields: [notificationEventId], references: [id], onDelete: Cascade)
+
+  @@index([notificationEventId, channel])
+  @@index([status, channel])
 }
 
 model Ride {
@@ -54,12 +307,32 @@ model Ride {
   updatedAt          DateTime
   distanceMeters     Float?
   durationSeconds    Int?
+  originalFare       Int?
+  discountAmount     Int?
+  finalFare          Int?
+  promoCode          String?
+  paymentStatus      PaymentStatus @default(unpaid)
+  paymentId          String?
   fareEstimate       Json?
+  paymentMethod      RidePaymentMethod?
 
   rider User?  @relation("RiderRides", fields: [riderId], references: [id])
   driver User? @relation("DriverRides", fields: [driverId], references: [id])
   offer  Offer?
   trips  Trip[]
+  walletTransactions WalletTransaction[]
+}
+
+model Payment {
+  id                String        @id
+  rideId            String        @unique
+  status            PaymentStatus @default(unpaid)
+  amount            Int
+  currency          String
+  provider          String
+  providerReference String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 }
 
 model Offer {
@@ -77,4 +350,47 @@ model Trip {
   driverId  String?
   startedAt DateTime
   ride      Ride     @relation(fields: [rideId], references: [id], onDelete: Cascade)
+}
+
+model AppSetting {
+  key          String   @id
+  booleanValue Boolean?
+  jsonValue    Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model AuthSession {
+  id               String    @id @default(cuid())
+  userId           String
+  role             String
+  refreshTokenHash String
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  lastUsedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, role, createdAt])
+  @@index([expiresAt])
+}
+
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  actorRole  String
+  action     String
+  targetType String
+  targetId   String?
+  requestId  String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  actor User @relation("AdminAuditActor", fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+  @@index([targetType, targetId, createdAt])
 }

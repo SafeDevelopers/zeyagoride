@@ -1,8 +1,9 @@
 import { useMemo } from 'react';
-import { Navigation, MessageSquare, PhoneCall } from '../lucideIcons';
+import { Navigation, MessageSquare, PhoneCall, ExternalLink } from '../lucideIcons';
 import { useMobileApp } from '../../context/MobileAppContext';
 import { driverRideService } from '../../services/api';
-import type { RideSummary } from '../../types/api';
+import { appSettingsService } from '../../services/api/appSettingsService';
+import type { LatLng, RideSummary } from '../../types/api';
 import {
   driverNavAfterTripStart,
   nonEmptyTripStops,
@@ -10,6 +11,28 @@ import {
   toCompletedRide,
   toInProgressRide,
 } from '../../services/rides/rideLifecycle';
+
+function openExternalTurnByTurn(target: LatLng): void {
+  const { latitude, longitude } = target;
+  const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${latitude},${longitude}`)}`;
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+function navTargetCoords(
+  navStep: string | null,
+  ride: RideSummary | null,
+  tripStops: ReturnType<typeof nonEmptyTripStops>,
+  navStopLegIndex: number | null,
+): LatLng | null {
+  if (!ride || !navStep) return null;
+  if (navStep === 'to_pickup') return ride.pickupCoords;
+  if (navStep === 'to_destination') return ride.destinationCoords;
+  if (navStep === 'to_stop' && navStopLegIndex !== null) {
+    const c = tripStops[navStopLegIndex]?.coords;
+    return c ?? null;
+  }
+  return null;
+}
 
 export function DriverActiveTripScreen() {
   const {
@@ -26,13 +49,42 @@ export function DriverActiveTripScreen() {
     currentRide,
     setCurrentRide,
     activeTripId,
+    requireRideSafetyPin,
+    setRequireRideSafetyPin,
+    isPinVerified,
+    setEnteredPin,
+    setShowPinVerification,
   } = useMobileApp();
 
   const tripStops = useMemo(() => nonEmptyTripStops(currentRide), [currentRide]);
 
+  const externalNavTarget = useMemo(
+    () => navTargetCoords(navStep, currentRide, tripStops, navStopLegIndex),
+    [navStep, currentRide, tripStops, navStopLegIndex],
+  );
+
+  /** Explicit navigation target for the main sheet (ride-share style), separate from trip-progress CTA. */
+  const navigationTargetHint = useMemo(() => {
+    if (navStep === 'to_pickup') return 'Navigate to pickup';
+    if (navStep === 'to_destination') return 'Navigate to drop-off';
+    if (navStep === 'to_stop' && navStopLegIndex !== null) {
+      const label = tripStops[navStopLegIndex]?.address?.trim();
+      const short = label && label.length > 40 ? `${label.slice(0, 37)}…` : label;
+      return short ? `Navigate to stop: ${short}` : `Navigate to stop ${navStopLegIndex + 1}`;
+    }
+    if (navStep === 'at_pickup') return 'At pickup — start trip when the rider is ready';
+    if (navStep === 'at_stop' && navStopLegIndex !== null) {
+      if (navStopLegIndex < tripStops.length - 1) return 'At stop — continue to next stop';
+      return 'At stop — continue to drop-off';
+    }
+    return null;
+  }, [navStep, navStopLegIndex, tripStops]);
+
   const stripTitle = useMemo(() => {
-    if (navStep === 'to_pickup') return 'Navigate to Pickup';
-    if (navStep === 'at_pickup') return 'At pickup';
+    if (navStep === 'to_pickup') return 'Navigate to pickup';
+    if (navStep === 'at_pickup') {
+      return tripStops.length > 0 ? 'Pickup reached · next stop' : 'Pickup reached · drop-off next';
+    }
     if (navStep === 'to_stop' && navStopLegIndex !== null) {
       const label = tripStops[navStopLegIndex]?.address?.trim();
       return label ? `To stop — ${label}` : `Navigate to stop ${navStopLegIndex + 1}`;
@@ -41,38 +93,53 @@ export function DriverActiveTripScreen() {
       const label = tripStops[navStopLegIndex]?.address?.trim();
       return label ? `At stop — ${label}` : `At stop ${navStopLegIndex + 1}`;
     }
-    if (navStep === 'to_destination') return 'Navigate to destination';
+    if (navStep === 'to_destination') return 'Navigate to drop-off';
     return 'Trip';
   }, [navStep, navStopLegIndex, tripStops]);
 
   const primaryLabel =
     navStep === 'to_pickup'
-      ? 'I have Arrived'
+      ? 'Arrive at pickup'
       : navStep === 'at_pickup'
-        ? 'Start Trip'
+        ? tripStops.length > 0
+          ? 'Start trip to next stop'
+          : 'Start trip to drop-off'
         : navStep === 'to_stop'
-          ? 'Arrived at stop'
+          ? 'Arrive at stop'
           : navStep === 'at_stop'
             ? navStopLegIndex !== null && navStopLegIndex < tripStops.length - 1
               ? 'Continue to next stop'
-              : 'Continue to destination'
+              : 'Continue to drop-off'
             : navStep === 'to_destination'
-              ? 'Complete Trip'
+              ? 'Complete drop-off'
               : 'Next';
 
   return (
     <>
       {isNavigating && (
         <>
-          <div className="absolute left-0 right-0 top-0 z-30 flex items-center justify-between bg-velox-primary px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-white shadow-md">
+          <div className="pointer-events-auto absolute left-0 right-0 top-0 z-30 flex items-center justify-between gap-2 bg-velox-primary px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-white shadow-md">
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <Navigation size={18} className="shrink-0 text-sky-300" />
               <span className="min-w-0 truncate text-sm font-bold">{stripTitle}</span>
             </div>
-            <span className="shrink-0 text-sm opacity-80">5 min</span>
+            <div className="flex shrink-0 items-center gap-2">
+              {externalNavTarget && (
+                <button
+                  type="button"
+                  onClick={() => openExternalTurnByTurn(externalNavTarget)}
+                  className="flex items-center gap-1 rounded-lg bg-white/15 px-2 py-1 text-[11px] font-bold text-white transition-colors hover:bg-white/25"
+                  aria-label="Open turn-by-turn directions in Google Maps"
+                >
+                  <ExternalLink size={14} className="shrink-0" />
+                  Open Maps
+                </button>
+              )}
+              <span className="text-sm opacity-80">ETA 5 min</span>
+            </div>
           </div>
 
-          <div className="absolute bottom-0 left-0 right-0 z-30 w-full p-4 pt-2">
+          <div className="pointer-events-auto absolute bottom-0 left-0 right-0 z-30 w-full p-4 pt-2">
             <div className="velox-glass-bottom rounded-t-[1.75rem] p-6 shadow-[0_-16px_48px_rgba(45,27,66,0.2)]">
               <div className="mb-6 flex items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-3">
@@ -105,6 +172,12 @@ export function DriverActiveTripScreen() {
                 </div>
               </div>
 
+              {navigationTargetHint ? (
+                <p className="mb-3 text-center text-[13px] font-bold leading-snug text-velox-primary">
+                  {navigationTargetHint}
+                </p>
+              ) : null}
+
               <button
                 type="button"
                 onClick={async () => {
@@ -122,6 +195,19 @@ export function DriverActiveTripScreen() {
                       setNavStep('at_pickup');
                       setRideStatus('arrived');
                     } else if (navStep === 'at_pickup') {
+                      let pinRequired = requireRideSafetyPin;
+                      try {
+                        const settings = await appSettingsService.getSettings();
+                        pinRequired = settings.requireRideSafetyPin;
+                        setRequireRideSafetyPin(pinRequired);
+                      } catch {
+                        /* keep cached safe default */
+                      }
+                      if (pinRequired && !isPinVerified) {
+                        setEnteredPin(['', '', '', '']);
+                        setShowPinVerification(true);
+                        return;
+                      }
                       let nextRide: RideSummary | null = currentRide;
                       if (activeTripId) {
                         const res = await driverRideService.tripStart(activeTripId);
@@ -147,7 +233,9 @@ export function DriverActiveTripScreen() {
                       }
                     } else if (navStep === 'to_destination') {
                       if (activeTripId) {
-                        const res = await driverRideService.tripComplete(activeTripId);
+                        const res = await driverRideService.tripComplete(activeTripId, {
+                          paymentMethod: 'cash',
+                        });
                         syncRide(res.trip.ride);
                       } else if (currentRide) {
                         syncRide(toCompletedRide(currentRide));

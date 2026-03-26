@@ -10,4 +10,16 @@ export class FareEstimateDto {
 
   @IsString()
   formatted!: string;
+
+  @IsInt()
+  originalFare!: number;
+
+  @IsInt()
+  discountAmount!: number;
+
+  @IsInt()
+  finalFare!: number;
+
+  @IsString()
+  promoCode!: string;
 }

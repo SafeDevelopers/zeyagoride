@@ -12,6 +12,10 @@
 export const HTTP_AUTH_PATHS = {
   LOGIN_WITH_PHONE: '/auth/login-with-phone',
   VERIFY_OTP: '/auth/verify-otp',
+  REFRESH: '/auth/refresh',
+  REGISTER_RIDER: '/auth/register/rider',
+  REGISTER_DRIVER: '/auth/register/driver',
+  PROFILE: '/auth/profile',
 } as const;
 
 // --- HTTP: rider rides ---
@@ -19,6 +23,7 @@ export const HTTP_AUTH_PATHS = {
 /** TODO: Must match NestJS rider `RidesController` base path + param names. */
 export const RIDER_RIDE_PATHS = {
   COLLECTION: '/rides',
+  NOTIFICATIONS: '/rides/notifications',
   byId: (rideId: string) => `/rides/${encodeURIComponent(rideId)}`,
 } as const;
 
@@ -27,6 +32,7 @@ export const RIDER_RIDE_PATHS = {
 /** TODO: Must match NestJS driver module controllers (`DriverController`, trips, requests). */
 export const DRIVER_API_PATHS = {
   AVAILABILITY: '/driver/availability',
+  PROFILE: '/driver/profile',
   INCOMING_REQUESTS: '/driver/incoming-requests',
   acceptRequest: (requestId: string) =>
     `/driver/requests/${encodeURIComponent(requestId)}/accept`,
@@ -36,11 +42,42 @@ export const DRIVER_API_PATHS = {
   tripArrive: (tripId: string) => `/driver/trips/${encodeURIComponent(tripId)}/arrive`,
   tripStart: (tripId: string) => `/driver/trips/${encodeURIComponent(tripId)}/start`,
   tripComplete: (tripId: string) => `/driver/trips/${encodeURIComponent(tripId)}/complete`,
+  WALLET: '/driver/wallet',
+  VEHICLE: '/driver/vehicle',
+  WALLET_TRANSACTIONS: '/driver/wallet/transactions',
+  WALLET_TOP_UP_REQUESTS: '/driver/wallet/top-up-requests',
+  walletTopUpProof: (requestId: string) =>
+    `/driver/wallet/top-up-requests/${encodeURIComponent(requestId)}/proof`,
+  NOTIFICATIONS: '/driver/notifications',
+  NOTIFICATIONS_READ: '/driver/notifications/read',
 } as const;
 
 /** Read-only admin snapshot — same `AppStateService` as rider/driver (`AdminController`). */
 export const ADMIN_API_PATHS = {
   OVERVIEW: '/admin/overview',
+  SETTINGS: '/admin/settings',
+  DRIVERS: '/admin/drivers',
+  RIDERS: '/admin/riders',
+  PRICING: '/admin/pricing',
+  PROMOS: '/admin/promos',
+  COMMISSION: '/admin/commission',
+  updateDriverVerification: (driverId: string) =>
+    `/admin/drivers/${encodeURIComponent(driverId)}/verification`,
+  updateDriverVehicle: (driverId: string) =>
+    `/admin/drivers/${encodeURIComponent(driverId)}/vehicle`,
+  WALLET_TRANSACTIONS: '/admin/wallet/transactions',
+  walletTransactionsExportCsv: () => '/admin/wallet/transactions/export.csv',
+  WALLET_TOP_UP_REQUESTS: '/admin/wallet/top-up-requests',
+  approveTopUpRequest: (requestId: string) =>
+    `/admin/wallet/top-up-requests/${encodeURIComponent(requestId)}/approve`,
+  rejectTopUpRequest: (requestId: string) =>
+    `/admin/wallet/top-up-requests/${encodeURIComponent(requestId)}/reject`,
+  WALLET_NOTIFICATIONS: '/admin/wallet/notifications',
+} as const;
+
+/** Shared app settings used by mobile + admin. */
+export const APP_SETTINGS_PATHS = {
+  CURRENT: '/app/settings',
 } as const;
 
 // --- Realtime: channel names (Socket.IO rooms / WS topics / Redis channels) ---

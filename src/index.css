@@ -1,5 +1,22 @@
 @import "tailwindcss";
 
+/** Admin: print wallet report only (Payments tab → Print). */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #wallet-print-root,
+  #wallet-print-root * {
+    visibility: visible;
+  }
+  #wallet-print-root {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+}
+
 /* Velox-inspired design tokens (Zeyago Ride — presentation only) */
 @theme {
   --color-velox-primary: #4b2c6d;
@@ -43,6 +60,19 @@
   /** Bottom padding for scroll regions above home indicator */
   .velox-scroll-bottom {
     padding-bottom: max(1.5rem, env(safe-area-inset-bottom, 0px));
+  }
+  /**
+   * Rider/driver menu modals: full-height flex column + one scroll region.
+   * Use with absolute positioning classes, e.g. absolute inset-x-0 bottom-0 z-[150] velox-bottom-sheet
+   */
+  .velox-bottom-sheet {
+    @apply flex max-h-[min(92vh,760px)] min-h-0 flex-col overflow-hidden rounded-t-[2.5rem] bg-white shadow-2xl;
+  }
+  .velox-bottom-sheet-head {
+    @apply flex shrink-0 items-center justify-between px-8 pt-6 pb-2;
+  }
+  .velox-bottom-sheet-scroll {
+    @apply min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-y-contain [-webkit-overflow-scrolling:touch] px-8 pb-[max(1.25rem,env(safe-area-inset-bottom,0px))];
   }
   .velox-pulse-ring {
     position: absolute;

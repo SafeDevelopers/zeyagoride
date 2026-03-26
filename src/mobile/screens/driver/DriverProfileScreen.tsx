@@ -1,6 +1,9 @@
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Star, Car, Shield, Award, CheckCircle, AlertCircle, Clock, FileText } from '../lucideIcons';
 import { useMobileApp } from '../../context/MobileAppContext';
+import { authService } from '../../services/api';
+import { updateStoredUser } from '../../services/sessionStorage';
 import { IS_DEV_UI } from '../../utils/devUi';
 
 /** Matches driver dashboard mock in DriverHomeScreen */
@@ -18,16 +21,32 @@ export function DriverProfileScreen() {
   const {
     showDriverProfile,
     setShowDriverProfile,
-    userName,
-    userPhone,
     isVerified,
+    driverProfile,
     driverTier,
     driverVehicles,
     driverDocuments,
     vehicleDetails,
+    currentUser,
+    applyCurrentUser,
+    profileFields,
+    setProfileFields,
   } = useMobileApp();
+  const [isEditingContact, setIsEditingContact] = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  const activeVehicle = driverVehicles.find((v) => v.status === 'active') ?? driverVehicles[0];
+  useEffect(() => {
+    if (!showDriverProfile) return;
+    void authService
+      .getProfile()
+      .then((res) => {
+        updateStoredUser(res.user);
+        applyCurrentUser(res.user);
+      })
+      .catch(() => undefined);
+  }, [applyCurrentUser, showDriverProfile]);
+
+  const activeVehicle = driverVehicles[0];
   const vehicleSummary = activeVehicle
     ? `${activeVehicle.model} · ${activeVehicle.plate} · ${activeVehicle.color}`
     : vehicleDetails.make && vehicleDetails.model
@@ -53,12 +72,13 @@ export function DriverProfileScreen() {
               className="absolute inset-x-0 bottom-0 z-[90] flex max-h-[min(85vh,720px)] flex-col overflow-hidden rounded-t-[2.5rem] bg-white shadow-2xl"
             >
               <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain px-8 pb-[max(1.5rem,env(safe-area-inset-bottom,0px))] pt-6">
-              <div className="mb-6 flex shrink-0 items-center justify-between">
+              <div className="mb-6 flex shrink-0 items-center justify-between gap-2">
                 <h3 className="text-2xl font-bold text-slate-900">Driver Profile</h3>
                 <button
                   type="button"
                   onClick={() => setShowDriverProfile(false)}
                   className="rounded-full bg-slate-100 p-2"
+                  aria-label="Close profile"
                 >
                   <X size={20} />
                 </button>
@@ -72,8 +92,8 @@ export function DriverProfileScreen() {
                     className="rounded-full"
                   />
                 </div>
-                <h4 className="text-xl font-bold text-slate-900">{userName}</h4>
-                <p className="text-sm text-slate-500">{userPhone}</p>
+                <h4 className="text-xl font-bold text-slate-900">{currentUser?.name || 'Driver'}</h4>
+                <p className="text-sm text-slate-500">{currentUser?.phone || '—'}</p>
                 <div
                   className={`mt-3 rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider ${
                     isVerified ? 'bg-velox-accent/15 text-velox-dark' : 'bg-amber-100 text-amber-800'
@@ -81,6 +101,124 @@ export function DriverProfileScreen() {
                 >
                   {isVerified ? 'Verified driver' : 'Verification pending'}
                 </div>
+                {driverProfile?.vehicle && (
+                  <div className="mt-2 rounded-full bg-slate-100 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                    Vehicle {driverProfile.vehicle.status}
+                  </div>
+                )}
+              </div>
+
+              <div className="mb-6 rounded-2xl border border-slate-100 bg-white p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Contact profile</p>
+                    <p className="mt-1 text-sm text-slate-500">Used for driver identity and admin review.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isEditingContact) {
+                        setProfileFields({
+                          firstName: currentUser?.firstName ?? '',
+                          lastName: currentUser?.lastName ?? '',
+                          email: currentUser?.email ?? '',
+                          address: currentUser?.address ?? '',
+                        });
+                      }
+                      setIsEditingContact((prev) => !prev);
+                    }}
+                    className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700"
+                  >
+                    {isEditingContact ? 'Close' : 'Edit'}
+                  </button>
+                </div>
+                {isEditingContact ? (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <input
+                        type="text"
+                        value={profileFields.firstName}
+                        onChange={(e) => setProfileFields((prev) => ({ ...prev, firstName: e.target.value }))}
+                        placeholder="First name"
+                        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 outline-none focus:border-velox-primary"
+                      />
+                      <input
+                        type="text"
+                        value={profileFields.lastName}
+                        onChange={(e) => setProfileFields((prev) => ({ ...prev, lastName: e.target.value }))}
+                        placeholder="Last name"
+                        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 outline-none focus:border-velox-primary"
+                      />
+                    </div>
+                    <input
+                      type="email"
+                      value={profileFields.email}
+                      onChange={(e) => setProfileFields((prev) => ({ ...prev, email: e.target.value }))}
+                      placeholder="Email"
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 outline-none focus:border-velox-primary"
+                    />
+                    <input
+                      type="text"
+                      value={profileFields.address}
+                      onChange={(e) => setProfileFields((prev) => ({ ...prev, address: e.target.value }))}
+                      placeholder="Address"
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 outline-none focus:border-velox-primary"
+                    />
+                    <input
+                      type="text"
+                      readOnly
+                      value={currentUser?.phone ?? ''}
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm font-medium text-slate-500 outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setSaving(true);
+                        try {
+                          const res = await authService.updateProfile(profileFields);
+                          updateStoredUser(res.user);
+                          applyCurrentUser(res.user);
+                          setIsEditingContact(false);
+                        } finally {
+                          setSaving(false);
+                        }
+                      }}
+                      disabled={
+                        saving ||
+                        !profileFields.firstName.trim() ||
+                        !profileFields.lastName.trim() ||
+                        !profileFields.email.trim() ||
+                        !profileFields.address.trim()
+                      }
+                      className="w-full rounded-2xl bg-velox-primary py-3 text-sm font-bold text-white disabled:opacity-50"
+                    >
+                      {saving ? 'Saving…' : 'Save contact profile'}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-3 text-sm text-slate-700 sm:grid-cols-2">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">First name</p>
+                      <p className="mt-1 font-bold text-slate-900">{currentUser?.firstName || '—'}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Last name</p>
+                      <p className="mt-1 font-bold text-slate-900">{currentUser?.lastName || '—'}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Email</p>
+                      <p className="mt-1 font-bold text-slate-900">{currentUser?.email || '—'}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Verified phone</p>
+                      <p className="mt-1 font-bold text-slate-900">{currentUser?.phone || '—'}</p>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Address</p>
+                      <p className="mt-1 font-bold text-slate-900">{currentUser?.address || '—'}</p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="mb-6 grid grid-cols-2 gap-3">
@@ -117,6 +255,11 @@ export function DriverProfileScreen() {
                 {activeVehicle && (
                   <p className="mt-1 text-[10px] text-slate-500">
                     Status: {activeVehicle.status} · Insurance {activeVehicle.insuranceExpiry}
+                  </p>
+                )}
+                {driverProfile?.vehicle?.rejectionReason && (
+                  <p className="mt-2 text-[11px] font-medium text-red-600">
+                    {driverProfile.vehicle.rejectionReason}
                   </p>
                 )}
               </div>

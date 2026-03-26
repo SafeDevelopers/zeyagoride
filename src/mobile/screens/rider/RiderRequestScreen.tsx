@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   ChevronRight,
@@ -17,6 +17,7 @@ import { PlaceSuggestions } from '../../components/maps/PlaceSuggestions';
 import { useMobileApp } from '../../context/MobileAppContext';
 import { isLiveGeocodingEnabled, resolvePlace } from '../../services/mapbox/geocodingService';
 import type { PlaceSuggestion } from '../../types/places';
+import type { LatLng } from '../../types/api';
 import { riderRideService } from '../../services/api';
 import { buildRequestRideRequest } from '../../services/api/adapters';
 import {
@@ -29,6 +30,8 @@ import type { FareEstimate, RouteEstimate } from '../../types/route';
 import { isValidStopAddressString, toAssignedRide } from '../../services/rides/rideLifecycle';
 import { IS_DEV_UI } from '../../utils/devUi';
 
+const RIDER_REQUEST_DEBUG = import.meta.env.DEV;
+
 export function RiderRequestScreen() {
   const {
     t,
@@ -40,10 +43,13 @@ export function RiderRequestScreen() {
     setDestinationPlaceId,
     setDestinationCommitted,
     pickupCoords,
+    setPickupCoords,
+    setPickupPlaceId,
     destinationCoords,
     stops,
     setStops,
     stopCoords,
+    stopPlaceIds,
     profileType,
     currentRide,
     setCurrentRide,
@@ -62,6 +68,7 @@ export function RiderRequestScreen() {
     vehicleTypes,
     setStopCoords,
     setStopPlaceIds,
+    activePromo,
   } = useMobileApp();
 
   const rideStops = useMemo(
@@ -75,11 +82,92 @@ export function RiderRequestScreen() {
   const [routeEstimate, setRouteEstimate] = useState<RouteEstimate | null>(null);
   const [fareEstimate, setFareEstimate] = useState<FareEstimate | null>(null);
   const [requestSubmitting, setRequestSubmitting] = useState(false);
+  const requestSubmittingRef = useRef(false);
+  /** Tracks primary pointer that pressed the Request Ride CTA (lost-click fallback via pointerup). */
+  const requestRideCtaPointerIdRef = useRef<number | null>(null);
   const [stopSuggestionsIndex, setStopSuggestionsIndex] = useState<number | null>(null);
   const stopInputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const stopTimerRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   const blurStopTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   const liveGeo = isLiveGeocodingEnabled();
+  const currentRideId = currentRide?.id ?? null;
+  const currentRideApiStatus = currentRide?.status ?? null;
+  const hasSearchingRide =
+    rideStatus === 'searching' ||
+    currentRideApiStatus === 'pending' ||
+    currentRideApiStatus === 'matching';
+  const hasUnresolvedCurrentRide =
+    currentRide != null &&
+    currentRideApiStatus !== 'cancelled' &&
+    rideStatus !== 'completed' &&
+    rideStatus !== 'found' &&
+    rideStatus !== 'arrived' &&
+    rideStatus !== 'ongoing';
+  const searchingViewVisible = hasSearchingRide || hasUnresolvedCurrentRide;
+  const showVehicleSelectionSheet =
+    Boolean(destination) &&
+    destinationCommitted &&
+    rideStatus === 'idle' &&
+    !searchingViewVisible &&
+    currentRide == null;
+
+  useEffect(() => {
+    if (!RIDER_REQUEST_DEBUG) return;
+    console.log('[RiderRequestScreen] ride visibility', {
+      rideStatus,
+      currentRideId,
+      currentRideApiStatus,
+      destinationCommitted,
+      destination: destination.trim(),
+      hasSearchingRide,
+      hasUnresolvedCurrentRide,
+      searchingViewVisible,
+      showVehicleSelectionSheet,
+    });
+  }, [
+    rideStatus,
+    currentRideId,
+    currentRideApiStatus,
+    destinationCommitted,
+    destination,
+    hasSearchingRide,
+    hasUnresolvedCurrentRide,
+    searchingViewVisible,
+    showVehicleSelectionSheet,
+  ]);
+
+  const previousViewRef = useRef<{ searchingViewVisible: boolean; showVehicleSelectionSheet: boolean } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    if (!RIDER_REQUEST_DEBUG) return;
+    const prev = previousViewRef.current;
+    if (prev?.searchingViewVisible && !searchingViewVisible && showVehicleSelectionSheet) {
+      console.log('[RiderRequestScreen] searching -> request-sheet transition', {
+        rideStatus,
+        currentRideId,
+        currentRideApiStatus,
+        destinationCommitted,
+        destination: destination.trim(),
+        hasSearchingRide,
+        hasUnresolvedCurrentRide,
+        searchingViewVisible,
+        showVehicleSelectionSheet,
+      });
+    }
+    previousViewRef.current = { searchingViewVisible, showVehicleSelectionSheet };
+  }, [
+    rideStatus,
+    currentRideId,
+    currentRideApiStatus,
+    destinationCommitted,
+    destination,
+    hasSearchingRide,
+    hasUnresolvedCurrentRide,
+    searchingViewVisible,
+    showVehicleSelectionSheet,
+  ]);
 
   const cancelStopBlurTimer = (index: number) => {
     const t = blurStopTimers.current.get(index);
@@ -180,17 +268,286 @@ export function RiderRequestScreen() {
     }).then((re) => {
       if (cancelled) return;
       setRouteEstimate(re);
-      setFareEstimate(calculateFareEstimate(re, selectedVehicle));
+      void calculateFareEstimate(re, selectedVehicle).then(setFareEstimate);
     });
     return () => {
       cancelled = true;
     };
   }, [pickupCoords, destinationCoords, rideStops, selectedVehicle]);
 
+  const submitRequestRide = useCallback(async () => {
+    if (RIDER_REQUEST_DEBUG) {
+      console.log('[RiderRequestScreen] submitRequestRide() first line', {
+        requestSubmittingRef: requestSubmittingRef.current,
+        selectedVehicle,
+        destinationCommitted,
+        destination: destination.trim(),
+        pickup: pickup.trim(),
+        stops,
+      });
+    }
+    if (requestSubmittingRef.current) {
+      if (RIDER_REQUEST_DEBUG) {
+        console.log('[RiderRequestScreen] submit early return: requestSubmittingRef already true');
+      }
+      return;
+    }
+    // Lock immediately so a second tap in the same gesture / strict re-entry cannot start a parallel submit.
+    requestSubmittingRef.current = true;
+    setRequestSubmitting(true);
+    blurStopTimers.current.forEach((t) => clearTimeout(t));
+    blurStopTimers.current.clear();
+    setStopSuggestionsIndex(null);
+    let submitStage:
+      | 'start'
+      | 'validation'
+      | 'resolve_destination'
+      | 'resolve_pickup'
+      | 'resolve_stops'
+      | 'route_estimate'
+      | 'payload_build'
+      | 'request_ride'
+      | 'request_ride_success'
+      | 'set_current_ride' = 'start';
+    try {
+      submitStage = 'validation';
+      if (!selectedVehicle) {
+        if (RIDER_REQUEST_DEBUG) {
+          console.log('[RiderRequestScreen] submit early return: missing selected vehicle');
+        }
+        return;
+      }
+      if (!destination.trim()) {
+        if (RIDER_REQUEST_DEBUG) {
+          console.log('[RiderRequestScreen] submit early return: missing destination');
+        }
+        return;
+      }
+      if (!destinationCommitted) {
+        if (RIDER_REQUEST_DEBUG) {
+          console.log('[RiderRequestScreen] submit early return: destination not committed');
+        }
+        return;
+      }
+      const validation = {
+        hasDestination: Boolean(destination.trim()),
+        destinationCommitted,
+        hasSelectedVehicle: Boolean(selectedVehicle),
+      };
+      if (RIDER_REQUEST_DEBUG) {
+        console.log('[RiderRequestScreen] submit validation result', validation);
+      }
+      // Fresh resolve + route snapshot on submit (coords may still be catching up after blur/debounce).
+      let pickupResolved: LatLng | null = pickupCoords;
+      let destinationResolved: LatLng | null = destinationCoords;
+      const stopResolved: (LatLng | null)[] = stops.map((_, i) => stopCoords[i] ?? null);
+
+      if (destination.trim() && !destinationResolved) {
+        submitStage = 'resolve_destination';
+        try {
+          const r = await resolvePlace(destination.trim());
+          destinationResolved = r?.coords ?? null;
+          if (r?.coords) setDestinationCoords(r.coords);
+          if (r?.placeId) setDestinationPlaceId(r.placeId);
+          if (RIDER_REQUEST_DEBUG) {
+            console.log('[RiderRequestScreen] destination resolve result', {
+              resolved: Boolean(r),
+              destinationResolved,
+              placeId: r?.placeId ?? null,
+            });
+          }
+        } catch (error) {
+          if (RIDER_REQUEST_DEBUG) {
+            console.log('[RiderRequestScreen] destination resolve failed; continuing submit', {
+              error,
+              destination: destination.trim(),
+            });
+          }
+        }
+      }
+      if (pickup.trim() && !pickupResolved) {
+        submitStage = 'resolve_pickup';
+        try {
+          const r = await resolvePlace(pickup.trim());
+          pickupResolved = r?.coords ?? null;
+          if (r?.coords) setPickupCoords(r.coords);
+          if (r?.placeId) setPickupPlaceId(r.placeId);
+          if (RIDER_REQUEST_DEBUG) {
+            console.log('[RiderRequestScreen] pickup resolve result', {
+              resolved: Boolean(r),
+              pickupResolved,
+              placeId: r?.placeId ?? null,
+            });
+          }
+        } catch (error) {
+          if (RIDER_REQUEST_DEBUG) {
+            console.log('[RiderRequestScreen] pickup resolve failed; continuing submit', {
+              error,
+              pickup: pickup.trim(),
+            });
+          }
+        }
+      }
+      submitStage = 'resolve_stops';
+      let stopCoordsDirty = false;
+      const nextStopPlaceIds = stops.map((_, i) => stopPlaceIds[i] ?? null);
+      let stopPlaceIdsDirty = false;
+      for (let i = 0; i < stops.length; i++) {
+        if (!isValidStopAddressString(stops[i])) continue;
+        if (stopResolved[i]) continue;
+        try {
+          const r = await resolvePlace(stops[i].trim());
+          stopResolved[i] = r?.coords ?? null;
+          if (r?.coords) stopCoordsDirty = true;
+          if (r?.placeId && r.placeId !== (stopPlaceIds[i] ?? null)) {
+            nextStopPlaceIds[i] = r.placeId;
+            stopPlaceIdsDirty = true;
+          }
+          if (RIDER_REQUEST_DEBUG) {
+            console.log('[RiderRequestScreen] stop resolve result', {
+              index: i,
+              stop: stops[i].trim(),
+              resolved: Boolean(r),
+              coords: r?.coords ?? null,
+              placeId: r?.placeId ?? null,
+            });
+          }
+        } catch (error) {
+          if (RIDER_REQUEST_DEBUG) {
+            console.log('[RiderRequestScreen] stop resolve failed; continuing submit', {
+              index: i,
+              stop: stops[i].trim(),
+              error,
+            });
+          }
+        }
+      }
+      if (stopCoordsDirty) {
+        setStopCoords(stops.map((_, i) => stopResolved[i] ?? null));
+      }
+      if (stopPlaceIdsDirty) {
+        setStopPlaceIds(nextStopPlaceIds);
+      }
+
+      const rideStops = stops
+        .map((address, i) => ({ address, coords: stopResolved[i] ?? null }))
+        .filter((s) => isValidStopAddressString(s.address));
+      const invalidStop = rideStops.find((s) => s.coords == null);
+      if (invalidStop) {
+        if (RIDER_REQUEST_DEBUG) {
+          console.log('[RiderRequestScreen] submit early return: invalid stop data', {
+            address: invalidStop.address,
+          });
+        }
+        return;
+      }
+
+      submitStage = 'route_estimate';
+      const re = await getRouteEstimate({
+        pickupCoords: pickupResolved,
+        destinationCoords: destinationResolved,
+        stops: rideStops,
+        vehicleType: selectedVehicle,
+      });
+      const fe = await calculateFareEstimate(re, selectedVehicle);
+      const estimate =
+        re.distanceMeters > 0 && fe
+          ? {
+              distanceMeters: re.distanceMeters,
+              durationSeconds: re.durationSeconds,
+              fareEstimate: fe,
+              promoCode: activePromo?.code,
+            }
+          : undefined;
+
+      submitStage = 'payload_build';
+      const requestPayload = buildRequestRideRequest(
+        pickup,
+        destination,
+        stops,
+        selectedVehicle,
+        profileType,
+        undefined,
+        undefined,
+        {
+          pickupCoords: pickupResolved,
+          destinationCoords: destinationResolved,
+          stopCoords: stopResolved,
+        },
+        estimate,
+      );
+      if (RIDER_REQUEST_DEBUG) {
+        console.log('[RiderRequestScreen] payload built', {
+          requestPayload,
+        });
+        console.log('[RiderRequestScreen] before requestRide()', {
+          pickup: requestPayload.pickup,
+          destination: requestPayload.destination,
+          stops: requestPayload.stops,
+          vehicleType: requestPayload.vehicleType,
+          profileType: requestPayload.profileType,
+          pickupCoords: requestPayload.pickupCoords,
+          destinationCoords: requestPayload.destinationCoords,
+        });
+      }
+      submitStage = 'request_ride';
+      const { ride } = await riderRideService.requestRide(requestPayload);
+      if (RIDER_REQUEST_DEBUG) {
+        console.log('[RiderRequestScreen] after requestRide() resolves', {
+          rideId: ride.id,
+          rideStatus: ride.status,
+        });
+      }
+      submitStage = 'request_ride_success';
+      setCurrentRide(ride);
+      submitStage = 'set_current_ride';
+      if (RIDER_REQUEST_DEBUG) {
+        console.log('[RiderRequestScreen] setCurrentRide()', {
+          rideId: ride.id,
+          rideStatus: ride.status,
+        });
+      }
+      setRideStatus('searching');
+    } catch (error) {
+      if (RIDER_REQUEST_DEBUG) {
+        console.log('[RiderRequestScreen] submitRequestRide catch', {
+          submitStage,
+          error,
+        });
+      }
+      // Keep rider on vehicle sheet so first tap can retry; transient network/API errors should not feel like a "bounce".
+    } finally {
+      if (RIDER_REQUEST_DEBUG) {
+        console.log('[RiderRequestScreen] submitRequestRide finally');
+      }
+      requestSubmittingRef.current = false;
+      setRequestSubmitting(false);
+    }
+  }, [
+    pickup,
+    destination,
+    destinationCommitted,
+    stops,
+    selectedVehicle,
+    profileType,
+    pickupCoords,
+    destinationCoords,
+    stopCoords,
+    stopPlaceIds,
+    setCurrentRide,
+    setRideStatus,
+    setDestinationCoords,
+    setDestinationPlaceId,
+    setPickupCoords,
+    setPickupPlaceId,
+    setStopCoords,
+    setStopPlaceIds,
+  ]);
+
   return (
     <>
       {/* Vehicle selection — full-sheet layout (Velox ride-search): trip summary / scroll list / fixed CTA */}
-      {destination && destinationCommitted && rideStatus === 'idle' && (
+      {showVehicleSelectionSheet && (
         <motion.div
           initial={{ y: '100%' }}
           animate={{ y: 0 }}
@@ -459,45 +816,96 @@ export function RiderRequestScreen() {
               <button
                 type="button"
                 disabled={requestSubmitting}
-                onClick={async () => {
-                  if (requestSubmitting) return;
-                  setRequestSubmitting(true);
-                  try {
-                    const { ride } = await riderRideService.requestRide(
-                      buildRequestRideRequest(
-                        pickup,
-                        destination,
-                        stops,
-                        selectedVehicle,
-                        profileType,
-                        undefined,
-                        undefined,
-                        {
-                          pickupCoords,
-                          destinationCoords,
-                          stopCoords,
-                        },
-                        routeEstimate &&
-                          routeEstimate.distanceMeters > 0 &&
-                          fareEstimate
-                          ? {
-                              distanceMeters: routeEstimate.distanceMeters,
-                              durationSeconds: routeEstimate.durationSeconds,
-                              fareEstimate,
-                            }
-                          : undefined,
-                      ),
-                    );
-                    setCurrentRide(ride);
-                    setRideStatus('searching');
-                  } catch {
-                    // Keep rider on vehicle sheet so first tap can retry; transient network/API errors should not feel like a "bounce".
-                  } finally {
-                    setRequestSubmitting(false);
+                onPointerDownCapture={(e) => {
+                  if (RIDER_REQUEST_DEBUG) {
+                    console.log('[RiderRequestScreen] Request Ride CTA onPointerDownCapture', {
+                      pointerType: e.pointerType,
+                      button: e.button,
+                      pointerId: e.pointerId,
+                    });
                   }
                 }}
+                onPointerDown={(e) => {
+                  if (RIDER_REQUEST_DEBUG) {
+                    console.log('[RiderRequestScreen] Request Ride CTA onPointerDown', {
+                      pointerType: e.pointerType,
+                      button: e.button,
+                      pointerId: e.pointerId,
+                    });
+                  }
+                  if (requestSubmitting) return;
+                  if (e.pointerType === 'mouse' && e.button !== 0) return;
+                  requestRideCtaPointerIdRef.current = e.pointerId;
+                  // Defer blur: sync blur during capture caused lost synthetic clicks on some WebKit/touch stacks.
+                  queueMicrotask(() => {
+                    const a = document.activeElement;
+                    if (a instanceof HTMLInputElement || a instanceof HTMLTextAreaElement) {
+                      a.blur();
+                    }
+                  });
+                }}
+                onPointerUp={(e) => {
+                  if (RIDER_REQUEST_DEBUG) {
+                    console.log('[RiderRequestScreen] Request Ride CTA onPointerUp', {
+                      pointerType: e.pointerType,
+                      button: e.button,
+                      pointerId: e.pointerId,
+                      matchesTracked:
+                        requestRideCtaPointerIdRef.current != null &&
+                        requestRideCtaPointerIdRef.current === e.pointerId,
+                    });
+                  }
+                  if (requestSubmitting) return;
+                  if (requestRideCtaPointerIdRef.current !== e.pointerId) return;
+                  requestRideCtaPointerIdRef.current = null;
+                  if (e.pointerType === 'mouse' && e.button !== 0) return;
+                  void submitRequestRide();
+                }}
+                onPointerCancel={(e) => {
+                  if (RIDER_REQUEST_DEBUG) {
+                    console.log('[RiderRequestScreen] Request Ride CTA onPointerCancel', {
+                      pointerId: e.pointerId,
+                    });
+                  }
+                  if (requestRideCtaPointerIdRef.current === e.pointerId) {
+                    requestRideCtaPointerIdRef.current = null;
+                  }
+                }}
+                onMouseDown={(e) => {
+                  if (RIDER_REQUEST_DEBUG) {
+                    console.log('[RiderRequestScreen] Request Ride CTA onMouseDown', {
+                      button: e.button,
+                    });
+                  }
+                }}
+                onTouchStart={(e) => {
+                  if (RIDER_REQUEST_DEBUG) {
+                    console.log('[RiderRequestScreen] Request Ride CTA onTouchStart', {
+                      touches: e.touches.length,
+                    });
+                  }
+                }}
+                onTouchEnd={(e) => {
+                  if (RIDER_REQUEST_DEBUG) {
+                    console.log('[RiderRequestScreen] Request Ride CTA onTouchEnd', {
+                      touches: e.touches.length,
+                      changedTouches: e.changedTouches.length,
+                    });
+                  }
+                }}
+                onClick={() => {
+                  if (RIDER_REQUEST_DEBUG) {
+                    console.log('[RiderRequestScreen] Request Ride CTA onClick', {
+                      destination: destination.trim(),
+                      destinationCommitted,
+                      rideStatus,
+                      currentRideId,
+                    });
+                  }
+                  void submitRequestRide();
+                }}
                 aria-busy={requestSubmitting}
-                className="flex min-h-[3.25rem] min-w-0 flex-1 items-center justify-center rounded-2xl bg-velox-primary px-4 py-3 text-sm font-semibold leading-tight text-white shadow-[0_8px_24px_rgba(75,44,109,0.35)] ring-1 ring-velox-primary/35 transition-[transform,box-shadow] enabled:active:scale-[0.99] disabled:opacity-70"
+                className="flex min-h-[3.25rem] min-w-0 flex-1 touch-manipulation items-center justify-center rounded-2xl bg-velox-primary px-4 py-3 text-sm font-semibold leading-tight text-white shadow-[0_8px_24px_rgba(75,44,109,0.35)] ring-1 ring-velox-primary/35 transition-[transform,box-shadow] enabled:active:scale-[0.99] disabled:opacity-70"
               >
                 {t('requestRide')}
               </button>
@@ -506,7 +914,7 @@ export function RiderRequestScreen() {
         </motion.div>
       )}
 
-      {rideStatus === 'searching' && (
+      {searchingViewVisible && (
         <div className="relative z-[2] flex w-full min-w-0 shrink-0 flex-col bg-white">
           <div className="velox-safe-x flex shrink-0 flex-col items-center px-5 pb-2 pt-5 text-center">
             <div className="relative mb-4 flex items-center justify-center">

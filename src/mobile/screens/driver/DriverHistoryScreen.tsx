@@ -24,16 +24,16 @@ export function DriverHistoryScreen() {
                             initial={{ y: '100%' }}
                             animate={{ y: 0 }}
                             exit={{ y: '100%' }}
-                            className="absolute inset-x-0 bottom-0 z-[90] flex max-h-[min(85vh,720px)] flex-col overflow-hidden rounded-t-[2.5rem] bg-white shadow-2xl"
+                            className="absolute inset-x-0 bottom-0 z-[90] velox-bottom-sheet"
                           >
-                            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain px-8 pb-[max(1.5rem,env(safe-area-inset-bottom,0px))] pt-6">
-                            <div className="mb-6 flex shrink-0 items-center justify-between">
+                            <div className="velox-bottom-sheet-head">
                               <h3 className="text-xl font-bold text-slate-900">Earnings History</h3>
-                              <button onClick={() => setShowEarningsHistory(false)} className="rounded-full bg-slate-100 p-2">
+                              <button type="button" onClick={() => setShowEarningsHistory(false)} className="rounded-full bg-slate-100 p-2">
                                 <X size={20} />
                               </button>
                             </div>
                             
+                            <div className="velox-bottom-sheet-scroll">
                             <div className="space-y-4">
                               {[
                                 { id: 1, time: '14:20', from: 'Bole Medhanialem', to: 'Kazanchis', fare: 'ETB 180.00' },

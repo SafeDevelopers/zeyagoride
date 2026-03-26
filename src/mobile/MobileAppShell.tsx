@@ -75,20 +75,25 @@ import {
   Wrench,
 } from 'lucide-react';
 import { useMobileApp } from './context/MobileAppContext';
-import { riderRideService } from './services/api';
+import { riderRideService, driverRideService } from './services/api';
+import { appSettingsService } from './services/api/appSettingsService';
 import { buildRequestRideRequest } from './services/api/adapters';
 import { driverNavAfterTripStart } from './services/rides/rideLifecycle';
 import { calculateFareEstimate, getRouteEstimate } from './services/mapbox/routeService';
 import { walletTransactionDistanceLabel, walletTransactionDurationLabel } from './utils/walletFromRide';
 import { MapboxMap } from './components/maps/MapboxMap';
+import type { MapboxCameraFraming } from './components/maps/types';
 import { WelcomeScreen } from './screens/auth/WelcomeScreen';
 import { PhoneScreen } from './screens/auth/PhoneScreen';
 import { OtpScreen } from './screens/auth/OtpScreen';
+import { RiderRegistrationScreen } from './screens/auth/RiderRegistrationScreen';
+import { DriverRegistrationScreen } from './screens/auth/DriverRegistrationScreen';
 import { RiderHomeScreen, RiderPlanningSheet } from './screens/rider/RiderHomeScreen';
 import { RiderRequestScreen } from './screens/rider/RiderRequestScreen';
 import { RiderTripScreen } from './screens/rider/RiderTripScreen';
 import { RiderProfileScreen } from './screens/rider/RiderProfileScreen';
 import { DriverProfileScreen } from './screens/driver/DriverProfileScreen';
+import { DriverWalletScreen } from './screens/driver/DriverWalletScreen';
 import { RiderHistoryScreen } from './screens/rider/RiderHistoryScreen';
 import { DriverVerificationScreen } from './screens/driver/DriverVerificationScreen';
 import { DriverHomeScreen } from './screens/driver/DriverHomeScreen';
@@ -96,8 +101,11 @@ import { DriverActiveTripScreen } from './screens/driver/DriverActiveTripScreen'
 import { DriverRequestsScreen } from './screens/driver/DriverRequestsScreen';
 import { DriverHistoryScreen } from './screens/driver/DriverHistoryScreen';
 import type { WalletTransaction } from './types/mobile';
-import type { LatLng, RideSummary } from './types/api';
+import type { DriverNotificationRow, LatLng, RideSummary } from './types/api';
 import type { RideStatus as RiderUiPhase } from './types/mobile';
+import { mapApiRideStatusToUi } from './utils/rideUiPhase';
+
+const RIDER_REQUEST_DEBUG = import.meta.env.DEV;
 
 /**
  * Rider active-trip map: approximate vehicle position along pickup→destination so framing matches
@@ -119,9 +127,52 @@ function estimateRiderTripDriverVehicleCoords(ride: RideSummary, uiPhase: RiderU
   return null;
 }
 
+function formatDriverWalletNotificationTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return '';
+  }
+}
+
+/** Maps persisted `DriverNotificationType` to inbox labels (wallet / top-up / commission). */
+function driverWalletNotificationCategory(
+  type: string,
+): { label: string; dotClass: string } {
+  switch (type) {
+    case 'low_balance_warning':
+      return { label: 'Low balance alert', dotClass: 'bg-amber-500' };
+    case 'wallet_blocked':
+      return { label: 'Dispatch blocked', dotClass: 'bg-red-500' };
+    case 'top_up_approved':
+      return { label: 'Top-up approved', dotClass: 'bg-emerald-500' };
+    case 'top_up_rejected':
+      return { label: 'Top-up declined', dotClass: 'bg-slate-500' };
+    case 'commission_deducted':
+      return { label: 'Trip commission', dotClass: 'bg-violet-600' };
+    default:
+      return { label: 'Wallet', dotClass: 'bg-slate-400' };
+  }
+}
+
 export function MobileAppShell() {
   /** Browser geolocation for “my location” pin on the map (home step only). */
   const [userLocationCoords, setUserLocationCoords] = useState<LatLng | null>(null);
+  const [ratingComment, setRatingComment] = useState('');
+  /** Vehicle Management: inline add form (manual plate/tag entry). */
+  const [driverVehicleAddOpen, setDriverVehicleAddOpen] = useState(false);
+  const [newVehicleForm, setNewVehicleForm] = useState({
+    model: '',
+    plate: '',
+    color: '',
+    insuranceExpiry: '',
+  });
 
   const {
     t,
@@ -147,6 +198,8 @@ export function MobileAppShell() {
     setShowProfile,
     showDriverProfile,
     setShowDriverProfile,
+    showDriverWallet,
+    setShowDriverWallet,
     rating,
     setRating,
     hoverRating,
@@ -163,6 +216,8 @@ export function MobileAppShell() {
     setPickup,
     destination,
     destinationCommitted,
+    riderActiveTripPanelCollapsed,
+    setRiderActiveTripPanelCollapsed,
     riderWhereToSearchExpanded,
     riderPlanningSheetOpen,
     setRiderPlanningSheetOpen,
@@ -225,6 +280,7 @@ export function MobileAppShell() {
     navStep,
     setNavStep,
     setNavStopLegIndex,
+    activeTripId,
     setActiveTripId,
     verificationStep,
     setVerificationStep,
@@ -286,6 +342,7 @@ export function MobileAppShell() {
     setEnteredPin,
     showPinVerification,
     setShowPinVerification,
+    requireRideSafetyPin,
     isPinVerified,
     setIsPinVerified,
     paymentMethods,
@@ -374,7 +431,46 @@ export function MobileAppShell() {
     handleNextStep,
     handleResendOtp,
     handleLogout,
+    refreshDriverWallet,
+    refreshDriverProfile,
   } = useMobileApp();
+
+  const prevDriverWalletOpenRef = React.useRef(false);
+  useEffect(() => {
+    if (prevDriverWalletOpenRef.current && !showDriverWallet && mode === 'driver') {
+      void refreshDriverWallet();
+    }
+    prevDriverWalletOpenRef.current = showDriverWallet;
+  }, [showDriverWallet, mode, refreshDriverWallet]);
+
+  const [driverWalletNotifications, setDriverWalletNotifications] = useState<DriverNotificationRow[]>([]);
+
+  const refreshDriverWalletNotifications = useCallback(async () => {
+    if (mode !== 'driver') return;
+    try {
+      const res = await driverRideService.listNotifications();
+      setDriverWalletNotifications(res.notifications);
+    } catch {
+      setDriverWalletNotifications([]);
+    }
+  }, [mode]);
+
+  useEffect(() => {
+    if (mode !== 'driver') {
+      setDriverWalletNotifications([]);
+      return;
+    }
+    void refreshDriverWalletNotifications();
+  }, [mode, showNotifications, isMenuOpen, showDriverWallet, refreshDriverWalletNotifications]);
+
+  const markDriverWalletNotificationsRead = useCallback(async () => {
+    try {
+      await driverRideService.markNotificationsRead();
+      await refreshDriverWalletNotifications();
+    } catch {
+      /* keep list as-is */
+    }
+  }, [refreshDriverWalletNotifications]);
 
   useEffect(() => {
     if (step !== 'home') {
@@ -404,6 +500,7 @@ export function MobileAppShell() {
     setShowRating(false);
     setRating(0);
     setHoverRating(0);
+    setRatingComment('');
     setShowChat(false);
     setShowShareTrip(false);
     setShowSafetyToolkit(false);
@@ -434,6 +531,7 @@ export function MobileAppShell() {
     setShowRating,
     setRating,
     setHoverRating,
+    setRatingComment,
     setShowChat,
     setShowShareTrip,
     setShowSafetyToolkit,
@@ -512,6 +610,24 @@ export function MobileAppShell() {
   const riderBottomNavVisible = riderMapChromeVisible && riderTab !== 'home';
 
   const riderFloatingCardVisible = riderMapChromeVisible;
+  const riderEffectiveRideStatus: RiderUiPhase =
+    mode === 'rider' && currentRide?.status
+      ? mapApiRideStatusToUi(currentRide.status)
+      : rideStatus;
+  const currentRideId = currentRide?.id ?? null;
+  const currentRideApiStatus = currentRide?.status ?? null;
+  const riderHasSearchingRide =
+    riderEffectiveRideStatus === 'searching' ||
+    currentRideApiStatus === 'pending' ||
+    currentRideApiStatus === 'matching';
+  const riderHasUnresolvedCurrentRide =
+    currentRide != null &&
+    currentRideApiStatus !== 'cancelled' &&
+    riderEffectiveRideStatus !== 'completed' &&
+    riderEffectiveRideStatus !== 'found' &&
+    riderEffectiveRideStatus !== 'arrived' &&
+    riderEffectiveRideStatus !== 'ongoing';
+  const riderSearchingViewVisible = riderHasSearchingRide || riderHasUnresolvedCurrentRide;
 
   /** Velox ride-search: taller sheet so trip summary + list + fixed CTA fit like the mockup. */
   const riderVehicleSheetExpanded =
@@ -519,7 +635,9 @@ export function MobileAppShell() {
     riderTab === 'home' &&
     destinationCommitted &&
     Boolean(destination.trim()) &&
-    rideStatus === 'idle';
+    riderEffectiveRideStatus === 'idle' &&
+    !riderSearchingViewVisible &&
+    currentRide == null;
 
   /** Vehicle sheet or searching UI: single flex column so RiderRequestScreen is not beside an empty scroll area. */
   const riderRequestSheetMainLayout =
@@ -527,7 +645,8 @@ export function MobileAppShell() {
     riderTab === 'home' &&
     destinationCommitted &&
     Boolean(destination.trim()) &&
-    (rideStatus === 'idle' || rideStatus === 'searching');
+    ((riderEffectiveRideStatus === 'idle' && !riderSearchingViewVisible && currentRide == null) ||
+      riderSearchingViewVisible);
 
   /** “Finding your ride…” — short sheet; avoids empty vertical gap above cancel. */
   const riderSearchingCompactSheet =
@@ -535,16 +654,23 @@ export function MobileAppShell() {
     riderTab === 'home' &&
     destinationCommitted &&
     Boolean(destination.trim()) &&
-    rideStatus === 'searching';
+    riderSearchingViewVisible;
 
   /** Compact bottom panel on rider home (Where to? only) — more map like the reference. */
   const riderHomePlanningCompact =
-    mode === 'rider' && rideStatus === 'idle' && !destinationCommitted && !riderVehicleSheetExpanded;
+    mode === 'rider' && riderEffectiveRideStatus === 'idle' && !destinationCommitted && !riderVehicleSheetExpanded;
 
   /** Matched driver en route / at pickup / trip — taller sheet so trip controls are not clipped. */
   const riderActiveTripSheet =
     mode === 'rider' &&
-    (rideStatus === 'found' || rideStatus === 'arrived' || rideStatus === 'ongoing');
+    (riderEffectiveRideStatus === 'found' || riderEffectiveRideStatus === 'arrived' || riderEffectiveRideStatus === 'ongoing');
+
+  const riderActiveTripPanelCompact =
+    riderActiveTripSheet && riderActiveTripPanelCollapsed;
+
+  /** Expanded active-trip sheet should hug content; collapsed uses a fixed cap. */
+  const riderActiveTripExpandedContentSized =
+    riderActiveTripSheet && !riderActiveTripPanelCompact;
 
   const riderBottomGlassMaxClass = riderRequestSheetMainLayout
     ? riderSearchingCompactSheet
@@ -555,39 +681,191 @@ export function MobileAppShell() {
         ? 'max-h-[min(88%,620px)]'
         : 'max-h-[min(52%,380px)]'
       : riderActiveTripSheet
-        ? 'max-h-[min(88%,calc(100%-0.75rem))]'
+        ? riderActiveTripPanelCompact
+          ? 'max-h-[min(36%,260px)]'
+          : 'max-h-none'
         : 'max-h-[46%]';
 
-  /** Same “rider home” map framing as before for idle + searching; active trip uses default (driver-style) framing. */
+  /** Idle “where to?” only — not searching / not committed route (those use routeOverview). */
   const riderMapRiderHomeFraming =
     mode === 'rider' &&
     riderTab === 'home' &&
-    (rideStatus === 'idle' || rideStatus === 'searching');
+    riderEffectiveRideStatus === 'idle' &&
+    !destinationCommitted;
+
+  /** Mapbox camera mode from trip role + UI phase (no business logic changes). */
+  const mapCameraFraming = useMemo((): MapboxCameraFraming => {
+    if (mode === 'rider') {
+      if (
+        riderEffectiveRideStatus === 'found' ||
+        riderEffectiveRideStatus === 'arrived' ||
+        riderEffectiveRideStatus === 'ongoing'
+      ) {
+        return 'activeNavigation';
+      }
+      if (
+        (riderEffectiveRideStatus === 'idle' &&
+          destinationCommitted &&
+          Boolean(destination.trim()) &&
+          !riderSearchingViewVisible &&
+          currentRide == null) ||
+        riderSearchingViewVisible
+      ) {
+        return 'routeOverview';
+      }
+      if (riderMapRiderHomeFraming) {
+        return 'riderHome';
+      }
+      return 'default';
+    }
+    if (
+      mode === 'driver' &&
+      isVerified &&
+      (activeTripId != null || isNavigating)
+    ) {
+      return 'activeNavigation';
+    }
+    return 'default';
+  }, [
+    mode,
+    riderEffectiveRideStatus,
+    destinationCommitted,
+    destination,
+    riderSearchingViewVisible,
+    riderMapRiderHomeFraming,
+    isVerified,
+    activeTripId,
+    isNavigating,
+  ]);
+
+  useEffect(() => {
+    if (!RIDER_REQUEST_DEBUG || mode !== 'rider') return;
+    console.log('[MobileAppShell] rider request/search render gate', {
+      riderTab,
+      rideStatus,
+      riderEffectiveRideStatus,
+      currentRideId,
+      currentRideApiStatus,
+      destinationCommitted,
+      destination: destination.trim(),
+      riderVehicleSheetExpanded,
+      riderRequestSheetMainLayout,
+      riderSearchingCompactSheet,
+      riderHasSearchingRide,
+      riderHasUnresolvedCurrentRide,
+      riderSearchingViewVisible,
+    });
+  }, [
+    mode,
+    riderTab,
+    rideStatus,
+    riderEffectiveRideStatus,
+    currentRideId,
+    currentRideApiStatus,
+    destinationCommitted,
+    destination,
+    riderVehicleSheetExpanded,
+    riderRequestSheetMainLayout,
+    riderSearchingCompactSheet,
+    riderHasSearchingRide,
+    riderHasUnresolvedCurrentRide,
+    riderSearchingViewVisible,
+  ]);
+
+  useEffect(() => {
+    if (!RIDER_REQUEST_DEBUG || mode !== 'rider') return;
+    const topPillText =
+      riderEffectiveRideStatus === 'found'
+        ? 'Driver arriving'
+        : riderEffectiveRideStatus === 'arrived'
+          ? 'Driver is here'
+          : riderEffectiveRideStatus === 'ongoing'
+            ? 'Trip in progress'
+            : null;
+    if (!topPillText) return;
+    console.log('[MobileAppShell] rider top pill source', {
+      currentRideStatus: currentRide?.status ?? null,
+      mappedRiderUiPhase: riderEffectiveRideStatus,
+      topPillText,
+    });
+  }, [mode, currentRide?.status, riderEffectiveRideStatus]);
+
+  const previousRiderRenderRef = React.useRef<{
+    riderSearchingCompactSheet: boolean;
+    riderVehicleSheetExpanded: boolean;
+    riderRequestSheetMainLayout: boolean;
+    riderSearchingViewVisible: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!RIDER_REQUEST_DEBUG || mode !== 'rider') return;
+    const prev = previousRiderRenderRef.current;
+    if (
+      prev?.riderSearchingCompactSheet &&
+      !riderSearchingCompactSheet &&
+      riderVehicleSheetExpanded
+    ) {
+      console.log('[MobileAppShell] searching -> request-sheet transition', {
+        rideStatus,
+        riderEffectiveRideStatus,
+        currentRideId,
+        currentRideApiStatus,
+        destinationCommitted,
+        destination: destination.trim(),
+        riderVehicleSheetExpanded,
+        riderRequestSheetMainLayout,
+        riderSearchingCompactSheet,
+        riderHasSearchingRide,
+        riderHasUnresolvedCurrentRide,
+        riderSearchingViewVisible,
+      });
+    }
+    previousRiderRenderRef.current = {
+      riderSearchingCompactSheet,
+      riderVehicleSheetExpanded,
+      riderRequestSheetMainLayout,
+      riderSearchingViewVisible,
+    };
+  }, [
+    mode,
+    rideStatus,
+    riderEffectiveRideStatus,
+    currentRideId,
+    currentRideApiStatus,
+    destinationCommitted,
+    destination,
+    riderVehicleSheetExpanded,
+    riderRequestSheetMainLayout,
+    riderSearchingCompactSheet,
+    riderHasSearchingRide,
+    riderHasUnresolvedCurrentRide,
+    riderSearchingViewVisible,
+  ]);
 
   const riderMapDriverCoords = useMemo(() => {
     if (mode !== 'rider') return null;
     if (!currentRide) return null;
     if (
-      rideStatus !== 'found' &&
-      rideStatus !== 'arrived' &&
-      rideStatus !== 'ongoing'
+      riderEffectiveRideStatus !== 'found' &&
+      riderEffectiveRideStatus !== 'arrived' &&
+      riderEffectiveRideStatus !== 'ongoing'
     ) {
       return null;
     }
-    return estimateRiderTripDriverVehicleCoords(currentRide, rideStatus);
-  }, [mode, currentRide, rideStatus]);
+    return estimateRiderTripDriverVehicleCoords(currentRide, riderEffectiveRideStatus);
+  }, [mode, currentRide, riderEffectiveRideStatus]);
 
   /** Where-to phase on rider Home: no outer sheet scroll; suggestion list scrolls inside PlaceSuggestions. */
   const riderWhereToNoOuterScroll =
-    mode === 'rider' && riderTab === 'home' && rideStatus === 'idle' && !destinationCommitted;
+    mode === 'rider' && riderTab === 'home' && riderEffectiveRideStatus === 'idle' && !destinationCommitted;
 
   /** Active trip / search: keep planning + trip UI on Home so tabs do not hide an in-progress ride. */
   useEffect(() => {
     if (mode !== 'rider') return;
-    if (rideStatus !== 'idle' && rideStatus !== 'completed') {
+    if (riderEffectiveRideStatus !== 'idle' && riderEffectiveRideStatus !== 'completed') {
       setRiderTab('home');
     }
-  }, [mode, rideStatus]);
+  }, [mode, riderEffectiveRideStatus]);
 
   useEffect(() => {
     if (mode === 'driver') setRiderTab('home');
@@ -596,10 +874,10 @@ export function MobileAppShell() {
   /** Wallet tab opens the existing wallet modal; closing the modal returns to Home tab. */
   useEffect(() => {
     if (mode !== 'rider' || step !== 'home') return;
-    if (riderTab === 'wallet' && rideStatus === 'idle') {
+    if (riderTab === 'wallet' && riderEffectiveRideStatus === 'idle') {
       setShowWallet(true);
     }
-  }, [mode, step, riderTab, rideStatus, setShowWallet]);
+  }, [mode, step, riderTab, riderEffectiveRideStatus, setShowWallet]);
 
   useEffect(() => {
     if (!showWallet && riderTab === 'wallet') {
@@ -627,6 +905,8 @@ export function MobileAppShell() {
           {step === 'welcome' && <WelcomeScreen />}
           {step === 'phone' && <PhoneScreen />}
           {step === 'otp' && <OtpScreen />}
+          {step === 'rider_register' && <RiderRegistrationScreen />}
+          {step === 'driver_register' && <DriverRegistrationScreen />}
 
           {step === 'home' && (
             <motion.div 
@@ -671,7 +951,7 @@ export function MobileAppShell() {
                   destinationCoords={currentRide?.destinationCoords ?? destinationCoords ?? null}
                   driverCoords={mode === 'driver' ? userLocationCoords : riderMapDriverCoords}
                   userLocationCoords={mode === 'driver' ? null : userLocationCoords}
-                  cameraFraming={riderMapRiderHomeFraming ? 'riderHome' : 'default'}
+                  cameraFraming={mapCameraFraming}
                   stops={
                     currentRide?.stops ??
                     stops.map((address, i) => ({
@@ -681,6 +961,15 @@ export function MobileAppShell() {
                   }
                   showRoute={
                     (destinationCommitted && Boolean(destination.trim())) || currentRide != null
+                  }
+                  routePolylineSegment={
+                    ((mode === 'driver' &&
+                      isNavigating &&
+                      mapCameraFraming === 'activeNavigation' &&
+                      navStep === 'to_pickup') ||
+                      (mode === 'rider' && riderEffectiveRideStatus === 'found'))
+                      ? 'driver_to_pickup'
+                      : 'full_trip'
                   }
                   className="h-full w-full"
                 />
@@ -701,15 +990,15 @@ export function MobileAppShell() {
 
                 {/* Trip status pill over map (Velox rider active) */}
                 {mode === 'rider' &&
-                  (rideStatus === 'found' || rideStatus === 'arrived' || rideStatus === 'ongoing') && (
+                  (riderEffectiveRideStatus === 'found' || riderEffectiveRideStatus === 'arrived' || riderEffectiveRideStatus === 'ongoing') && (
                     <div
                       className={`absolute left-4 z-[26] max-w-[min(100%-2rem,280px)] rounded-full px-4 py-2 text-xs font-bold text-white shadow-lg ${
-                        rideStatus === 'arrived' ? 'bg-green-600' : 'bg-velox-primary'
+                        riderEffectiveRideStatus === 'arrived' ? 'bg-green-600' : 'bg-velox-primary'
                       } ${mode === 'rider' && riderTab === 'home' ? 'top-[4.5rem]' : 'top-4'}`}
                     >
-                      {rideStatus === 'found' && 'Driver Arriving'}
-                      {rideStatus === 'arrived' && 'Driver is here'}
-                      {rideStatus === 'ongoing' && 'Trip in progress'}
+                      {riderEffectiveRideStatus === 'found' && 'Driver arriving'}
+                      {riderEffectiveRideStatus === 'arrived' && 'Driver is here'}
+                      {riderEffectiveRideStatus === 'ongoing' && 'Trip in progress'}
                     </div>
                   )}
 
@@ -755,31 +1044,48 @@ export function MobileAppShell() {
                     </div>
                   )}
 
-                {/* Rider Mode UI */}
+                {/* Rider Mode UI — active trip uses flex justify-end so the sheet grows from the bottom; collapsed stays a short strip */}
                 {mode === 'rider' && riderFloatingCardVisible && (
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 top-0 z-10 flex min-h-0 flex-col justify-end">
                   <div
-                    className={`pointer-events-none absolute bottom-0 left-0 right-0 z-10 w-full min-h-0 transition-[max-height] duration-300 ease-out ${riderBottomGlassMaxClass}${
+                    className={`pointer-events-none w-full min-h-0 transition-[max-height] duration-300 ease-out ${riderBottomGlassMaxClass}${
                       riderRequestSheetMainLayout
                         ? riderSearchingCompactSheet
                           ? ' h-auto min-h-0'
                           : ' h-[min(88%,calc(100%-0.5rem))] min-h-0'
                         : riderActiveTripSheet
-                          ? ' h-[min(88%,calc(100%-0.5rem))] min-h-0'
+                          ? riderActiveTripPanelCompact
+                            ? ' h-auto min-h-[5.25rem] max-h-[min(36%,260px)]'
+                            : ' h-auto min-h-0'
                           : ''
                     }`}
                   >
                     <motion.div
                       layout
-                      className={`velox-glass-bottom pointer-events-auto relative mx-auto flex max-h-full min-h-0 flex-col rounded-t-[1.75rem]${
+                      className={`velox-glass-bottom pointer-events-auto relative mx-auto flex w-full flex-col rounded-t-[1.75rem]${
                         riderRequestSheetMainLayout
                           ? riderSearchingCompactSheet
-                            ? ' overflow-hidden'
-                            : ' h-full overflow-hidden'
+                            ? ' max-h-full min-h-0 overflow-hidden'
+                            : ' h-full max-h-full min-h-0 overflow-hidden'
                           : riderActiveTripSheet
-                            ? ' h-full overflow-hidden'
+                            ? riderActiveTripPanelCompact
+                              ? ' h-auto min-h-0 max-h-full overflow-hidden'
+                              : ' h-auto max-h-[min(88%,calc(100%-0.75rem))] min-h-0 overflow-hidden'
                             : ''
                       }${riderWhereToNoOuterScroll ? ' overflow-visible' : !riderRequestSheetMainLayout && !riderActiveTripSheet ? ' overflow-hidden' : ''}`}
                     >
+                      {riderActiveTripSheet && (
+                        <button
+                          type="button"
+                          onClick={() => setRiderActiveTripPanelCollapsed((c) => !c)}
+                          className="flex w-full shrink-0 cursor-grab justify-center border-0 bg-transparent py-2 active:cursor-grabbing"
+                          aria-label={
+                            riderActiveTripPanelCollapsed ? 'Expand trip details' : 'Collapse trip details'
+                          }
+                        >
+                          <span className="pointer-events-none h-1.5 w-12 rounded-full bg-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]" />
+                        </button>
+                      )}
                       <div
                         className={`relative flex min-h-0 flex-col${
                           riderRequestSheetMainLayout
@@ -787,7 +1093,9 @@ export function MobileAppShell() {
                               ? ' overflow-hidden'
                               : ' h-full flex-1 overflow-hidden'
                             : riderActiveTripSheet
-                              ? ' h-full flex-1 overflow-hidden'
+                              ? riderActiveTripPanelCompact
+                                ? ' h-auto shrink-0 overflow-hidden'
+                                : ' h-auto shrink-0 overflow-visible'
                               : ' flex-1'
                         }${riderWhereToNoOuterScroll ? ' overflow-visible' : !riderRequestSheetMainLayout && !riderActiveTripSheet ? ' overflow-hidden' : ''}`}
                       >
@@ -804,10 +1112,14 @@ export function MobileAppShell() {
                         ) : (
                           <>
                             <div
-                              className={`velox-safe-x velox-safe-b pt-5 velox-scroll-bottom ${
+                              className={`velox-safe-x velox-safe-b velox-scroll-bottom ${
                                 riderWhereToNoOuterScroll
-                                  ? 'shrink-0 overflow-x-hidden overflow-y-visible'
-                                  : 'min-h-0 flex-1 overflow-y-auto overscroll-y-contain'
+                                  ? 'shrink-0 overflow-x-hidden overflow-y-visible pt-5'
+                                  : riderActiveTripSheet && riderActiveTripPanelCompact
+                                    ? 'shrink-0 overflow-x-hidden overflow-y-hidden pt-3'
+                                    : riderActiveTripExpandedContentSized
+                                      ? 'velox-safe-x velox-safe-b w-full shrink-0 overflow-x-hidden overflow-y-auto overscroll-y-contain pb-3 pt-1'
+                                      : 'min-h-0 flex-1 overflow-y-auto overscroll-y-contain pt-5'
                               }`}
                             >
                               {riderTab === 'home' && (
@@ -829,21 +1141,61 @@ export function MobileAppShell() {
                       </div>
                     </motion.div>
                   </div>
+                  </div>
                 )}
 
                 {/* Rider: active trip / search UI when overlays hide the floating card */}
-                {mode === 'rider' && !riderFloatingCardVisible && rideStatus !== 'idle' && rideStatus !== 'completed' && (
+                {mode === 'rider' && !riderFloatingCardVisible && riderEffectiveRideStatus !== 'idle' && riderEffectiveRideStatus !== 'completed' && (
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 top-0 z-10 flex min-h-0 flex-col justify-end">
                   <div
-                    className={`pointer-events-none absolute bottom-0 left-0 right-0 z-10 w-full min-h-0 transition-[max-height] duration-300 ease-out ${riderBottomGlassMaxClass}${
-                      riderActiveTripSheet ? ' h-[min(88%,calc(100%-0.5rem))] min-h-0' : ''
+                    className={`pointer-events-none w-full min-h-0 transition-[max-height] duration-300 ease-out ${riderBottomGlassMaxClass}${
+                      riderActiveTripSheet
+                        ? riderActiveTripPanelCompact
+                          ? ' h-auto min-h-[5.25rem] max-h-[min(36%,260px)]'
+                          : ' h-auto min-h-0'
+                        : ''
                     }`}
                   >
                     <motion.div
                       layout
-                      className="velox-glass-bottom pointer-events-auto relative mx-auto flex h-full max-h-full min-h-0 flex-col overflow-hidden rounded-t-[1.75rem]"
+                      className={`velox-glass-bottom pointer-events-auto relative mx-auto flex w-full flex-col overflow-hidden rounded-t-[1.75rem]${
+                        riderActiveTripSheet && riderActiveTripPanelCompact
+                          ? ' h-auto min-h-0 max-h-full'
+                          : riderActiveTripSheet
+                            ? ' h-auto max-h-[min(88%,calc(100%-0.75rem))] min-h-0'
+                            : ' h-full max-h-full min-h-0'
+                      }`}
                     >
-                      <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-                        <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain velox-safe-x velox-safe-b pt-5 velox-scroll-bottom">
+                      {riderActiveTripSheet && (
+                        <button
+                          type="button"
+                          onClick={() => setRiderActiveTripPanelCollapsed((c) => !c)}
+                          className="flex w-full shrink-0 cursor-grab justify-center border-0 bg-transparent py-2 active:cursor-grabbing"
+                          aria-label={
+                            riderActiveTripPanelCollapsed ? 'Expand trip details' : 'Collapse trip details'
+                          }
+                        >
+                          <span className="pointer-events-none h-1.5 w-12 rounded-full bg-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]" />
+                        </button>
+                      )}
+                      <div
+                        className={`relative flex min-h-0 flex-col overflow-hidden${
+                          riderActiveTripSheet && riderActiveTripPanelCompact
+                            ? ' h-auto shrink-0'
+                            : riderActiveTripSheet
+                              ? ' h-auto shrink-0'
+                              : ' h-full flex-1'
+                        }`}
+                      >
+                        <div
+                          className={
+                            riderActiveTripSheet && riderActiveTripPanelCompact
+                              ? 'shrink-0 overflow-x-hidden overflow-y-hidden velox-safe-x velox-safe-b pt-3 velox-scroll-bottom'
+                              : riderActiveTripSheet
+                                ? 'velox-safe-x velox-safe-b min-h-0 shrink-0 overflow-x-hidden overflow-y-auto overscroll-y-contain pb-3 pt-1 velox-scroll-bottom'
+                                : 'min-h-0 flex-1 overflow-y-auto overscroll-y-contain velox-safe-x velox-safe-b pt-5 velox-scroll-bottom'
+                          }
+                        >
                           <RiderHomeScreen />
                           <RiderTripScreen />
                         </div>
@@ -851,17 +1203,18 @@ export function MobileAppShell() {
                       </div>
                     </motion.div>
                   </div>
+                  </div>
                 )}
 
                 {/* Driver Mode UI */}
                 {mode === 'driver' && (
-                  <div className="absolute inset-0 z-40">
+                  <div className="pointer-events-none absolute inset-0 z-40">
                     {!isVerified ? (
-                      <div className="absolute inset-0 z-[60] overflow-y-auto overflow-x-hidden overscroll-y-contain bg-white">
+                      <div className="pointer-events-auto absolute inset-0 z-[60] overflow-y-auto overflow-x-hidden overscroll-y-contain bg-white">
                         <DriverVerificationScreen />
                       </div>
                     ) : (
-                      <div className="relative h-full">
+                      <div className="pointer-events-none relative h-full">
                         <DriverHomeScreen />
                         <DriverActiveTripScreen />
                         <DriverRequestsScreen />
@@ -1013,6 +1366,7 @@ export function MobileAppShell() {
               {/* Profile Modal (rider vs driver) */}
               <RiderProfileScreen />
               <DriverProfileScreen />
+              <DriverWalletScreen />
 
               {/* Rating Modal */}
               <AnimatePresence>
@@ -1022,26 +1376,26 @@ export function MobileAppShell() {
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0 }}
-                      className="absolute inset-0 z-[100] flex flex-col bg-white"
+                      className="absolute inset-0 z-[100] bg-slate-900/45 backdrop-blur-sm"
                     >
                       <motion.div 
-                        initial={{ scale: 0.96, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        exit={{ scale: 0.96, opacity: 0 }}
-                        className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 pb-[max(1.5rem,env(safe-area-inset-bottom,0px))] pt-[max(2.5rem,env(safe-area-inset-top,0px))] text-center"
+                        initial={{ y: 28, opacity: 0 }}
+                        animate={{ y: 0, opacity: 1 }}
+                        exit={{ y: 16, opacity: 0 }}
+                        className="absolute inset-x-0 bottom-0 mx-auto w-full max-w-[420px] rounded-t-[2rem] bg-white px-6 pb-[max(1.25rem,env(safe-area-inset-bottom,0px))] pt-5 text-center shadow-[0_-20px_60px_rgba(15,23,42,0.22)]"
                       >
-                        <div className="mb-5 flex h-20 w-20 items-center justify-center rounded-full bg-green-100 text-green-600 shadow-inner">
-                          <CheckCircle size={40} className="text-green-600" strokeWidth={2.25} />
+                        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-green-100 text-green-600 shadow-inner">
+                          <CheckCircle size={34} className="text-green-600" strokeWidth={2.25} />
                         </div>
-                        <h3 className="text-xl font-bold text-slate-900 sm:text-2xl">Trip completed!</h3>
-                        <p className="mt-2 text-sm text-slate-500">
+                        <h3 className="text-xl font-bold text-slate-900">Trip completed!</h3>
+                        <p className="mt-1.5 text-sm text-slate-500">
                           {mode === 'rider' ? 'How was your ride?' : 'How was the rider?'}
                         </p>
-                        <p className="mt-1 max-w-xs text-xs text-slate-400">
+                        <p className="mx-auto mt-1 max-w-[16rem] text-xs leading-relaxed text-slate-400">
                           Your feedback helps us improve the Zeyago experience.
                         </p>
                         
-                        <div className="my-6 flex justify-center gap-2.5 text-3xl sm:gap-3">
+                        <div className="my-5 flex justify-center gap-3 text-3xl sm:gap-3.5">
                           {[1, 2, 3, 4, 5].map((star) => (
                             <button
                               type="button"
@@ -1049,18 +1403,40 @@ export function MobileAppShell() {
                               onMouseEnter={() => setHoverRating(star)}
                               onMouseLeave={() => setHoverRating(0)}
                               onClick={() => setRating(star)}
-                              className="transition-transform hover:scale-110"
+                              className={`flex h-14 w-14 items-center justify-center rounded-2xl border shadow-sm transition-all active:scale-[0.97] ${
+                                star <= (hoverRating || rating)
+                                  ? 'border-amber-300 bg-amber-50 text-amber-500 shadow-[0_10px_22px_rgba(245,158,11,0.18)]'
+                                  : 'border-slate-200 bg-white text-slate-400 hover:border-amber-200 hover:bg-amber-50/50 hover:text-amber-400'
+                              }`}
+                              aria-label={`Rate ${star} star${star > 1 ? 's' : ''}`}
                             >
                               <Star 
-                                size={34} 
-                                className={star <= (hoverRating || rating) ? 'text-yellow-400' : 'text-slate-200'} 
+                                size={30} 
+                                className={star <= (hoverRating || rating) ? 'text-amber-500 drop-shadow-[0_2px_6px_rgba(245,158,11,0.28)]' : 'text-slate-400'} 
                                 fill={star <= (hoverRating || rating) ? 'currentColor' : 'none'}
                               />
                             </button>
                           ))}
                         </div>
 
-                        <div className="mt-auto w-full max-w-sm shrink-0 space-y-2.5 px-1">
+                        <div className="mb-4 rounded-[1.4rem] border border-slate-200 bg-slate-50 p-3 text-left shadow-sm">
+                          <label
+                            htmlFor="rating-comment"
+                            className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400"
+                          >
+                            Comment
+                          </label>
+                          <textarea
+                            id="rating-comment"
+                            value={ratingComment}
+                            onChange={(e) => setRatingComment(e.target.value)}
+                            placeholder="Add a comment (optional)"
+                            rows={3}
+                            className="min-h-[5.5rem] w-full resize-none rounded-2xl border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-900 outline-none transition-all placeholder:text-slate-400 focus:border-velox-primary focus:ring-4 focus:ring-velox-primary/12"
+                          />
+                        </div>
+
+                        <div className="w-full max-w-sm shrink-0 space-y-2.5 px-1">
                         <button 
                           type="button"
                           onClick={dismissRatingAndReturnHome}
@@ -1101,7 +1477,7 @@ export function MobileAppShell() {
                 initial={{ x: '-100%' }}
                 animate={{ x: 0 }}
                 exit={{ x: '-100%' }}
-                className="absolute inset-y-0 left-0 z-[70] flex w-3/4 max-w-[min(85vw,320px)] flex-col bg-white min-h-0"
+                className="absolute inset-y-0 left-0 z-[70] flex h-full max-h-full min-h-0 w-3/4 max-w-[min(85vw,320px)] flex-col overflow-hidden bg-white"
               >
                 <div className="velox-mobile-menu-pad mb-6 flex shrink-0 items-center gap-4 pt-[max(2rem,env(safe-area-inset-top,0px))]">
                   <div className="h-16 w-16 rounded-full bg-velox-accent/15 p-1 ring-2 ring-velox-accent/25">
@@ -1116,7 +1492,7 @@ export function MobileAppShell() {
                   </div>
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain velox-mobile-menu-pad velox-scroll-bottom">
+                <div className="velox-mobile-menu-pad velox-scroll-bottom min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-y-contain [-webkit-overflow-scrolling:touch]">
                 <nav className="space-y-6">
                   {mode === 'rider' ? (
                     <>
@@ -1227,7 +1603,8 @@ export function MobileAppShell() {
                   >
                     <Bell size={20} />
                     <span className="font-bold">Notifications</span>
-                    {notifications.some(n => !n.read) && (
+                    {(notifications.some((n) => !n.read) ||
+                      driverWalletNotifications.some((n) => !n.read)) && (
                       <span className="absolute left-3 top-0 h-2 w-2 rounded-full bg-red-500 ring-2 ring-white"></span>
                     )}
                   </button>
@@ -1279,6 +1656,17 @@ export function MobileAppShell() {
                   >
                     <User size={20} />
                     <span className="font-bold">Profile</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowDriverWallet(true);
+                      setIsMenuOpen(false);
+                    }}
+                    className="flex w-full items-center gap-4 text-slate-600 transition-colors hover:text-velox-primary"
+                  >
+                    <Wallet size={20} />
+                    <span className="font-bold">Wallet</span>
                   </button>
                   <button
                     type="button"
@@ -1361,7 +1749,8 @@ export function MobileAppShell() {
                   >
                     <Bell size={20} />
                     <span className="font-bold">Notifications</span>
-                    {notifications.some(n => !n.read) && (
+                    {(notifications.some((n) => !n.read) ||
+                      driverWalletNotifications.some((n) => !n.read)) && (
                       <span className="absolute left-3 top-0 h-2 w-2 rounded-full bg-red-500 ring-2 ring-white"></span>
                     )}
                   </button>
@@ -1434,7 +1823,7 @@ export function MobileAppShell() {
 
                 </nav>
                 </div>
-                <div className="velox-mobile-menu-pad shrink-0 border-t border-slate-100 bg-white py-4">
+                <div className="velox-mobile-menu-pad shrink-0 border-t border-slate-100 bg-white pt-4 pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
                   <button
                     type="button"
                     onClick={() => {
@@ -1513,7 +1902,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[165] max-h-[80%] overflow-y-auto rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[165] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-6 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Safety Toolkit</h3>
@@ -2090,7 +2479,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[150] h-[80%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[150] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-8 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Payment Methods</h3>
@@ -2195,7 +2584,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[150] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[150] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-8 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Schedule a Ride</h3>
@@ -2250,13 +2639,14 @@ export function MobileAppShell() {
                       stops: rideStops,
                       vehicleType: selectedVehicle,
                     });
-                    const fe = calculateFareEstimate(re, selectedVehicle);
+                    const fe = await calculateFareEstimate(re, selectedVehicle);
                     const estimate =
                       re.distanceMeters > 0 && fe
                         ? {
                             distanceMeters: re.distanceMeters,
                             durationSeconds: re.durationSeconds,
                             fareEstimate: fe,
+                            promoCode: activePromo?.code,
                           }
                         : undefined;
                     const { ride } = await riderRideService.requestRide(
@@ -2324,7 +2714,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[170] h-[85%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[170] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-8 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Help & Support</h3>
@@ -2396,16 +2786,16 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[150] flex h-[90%] flex-col overflow-hidden rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[150] velox-bottom-sheet"
               >
-                <div className="mb-6 flex shrink-0 items-center justify-between">
+                <div className="velox-bottom-sheet-head">
                   <h3 className="text-2xl font-bold text-slate-900">Earnings Analytics</h3>
-                  <button onClick={() => setShowEarningsAnalytics(false)} className="rounded-full bg-slate-100 p-2">
+                  <button type="button" onClick={() => setShowEarningsAnalytics(false)} className="rounded-full bg-slate-100 p-2">
                     <X size={20} />
                   </button>
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-y-auto no-scrollbar">
+                <div className="velox-bottom-sheet-scroll">
                   <div className="mb-6 grid grid-cols-2 gap-4">
                     <div className="rounded-3xl bg-velox-primary/10 p-6">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-velox-primary">Active Time</p>
@@ -2516,60 +2906,177 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[150] h-[85%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[150] velox-bottom-sheet"
               >
-                <div className="mb-8 flex items-center justify-between">
+                <div className="velox-bottom-sheet-head">
                   <h3 className="text-2xl font-bold text-slate-900">My Vehicles</h3>
-                  <button onClick={() => setShowVehicleManagement(false)} className="rounded-full bg-slate-100 p-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowVehicleManagement(false);
+                      setDriverVehicleAddOpen(false);
+                    }}
+                    className="rounded-full bg-slate-100 p-2"
+                  >
                     <X size={20} />
                   </button>
                 </div>
 
-                <div className="space-y-4">
-                  {driverVehicles.map((v) => (
-                    <div 
-                      key={v.id} 
-                      className={`relative rounded-3xl border p-6 transition-all ${v.status === 'active' ? 'border-velox-primary bg-velox-primary/10' : 'border-slate-100 bg-white'}`}
-                    >
-                      <div className="mb-4 flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                          <div className={`flex h-12 w-12 items-center justify-center rounded-2xl ${v.status === 'active' ? 'bg-velox-primary text-white' : 'bg-slate-100 text-slate-400'}`}>
-                            <Car size={24} />
+                <div className="velox-bottom-sheet-scroll">
+                  <div className="space-y-4">
+                    {(driverVehicles.length > 0 ? driverVehicles : []).map((v) => (
+                      <div 
+                        key={v.id} 
+                        className={`relative rounded-3xl border p-6 transition-all ${
+                          v.status === 'approved'
+                            ? 'border-velox-primary bg-velox-primary/10'
+                            : v.status === 'rejected'
+                              ? 'border-red-200 bg-red-50'
+                              : 'border-amber-200 bg-amber-50'
+                        }`}
+                      >
+                        <div className="mb-4 flex items-center justify-between">
+                          <div className="flex items-center gap-4">
+                            <div className={`flex h-12 w-12 items-center justify-center rounded-2xl ${v.status === 'active' ? 'bg-velox-primary text-white' : 'bg-slate-100 text-slate-400'}`}>
+                              <Car size={24} />
+                            </div>
+                            <div>
+                              <p className="font-bold text-slate-900">{v.model}</p>
+                              <p className="text-xs text-slate-500">{v.plate} • {v.color}</p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="font-bold text-slate-900">{v.model}</p>
-                            <p className="text-xs text-slate-500">{v.plate} • {v.color}</p>
-                          </div>
+                          <span className="rounded-full bg-slate-900 px-3 py-1 text-[8px] font-bold uppercase tracking-wider text-white">
+                            {v.status}
+                          </span>
                         </div>
-                        {v.status === 'active' && (
-                          <span className="rounded-full bg-velox-primary px-3 py-1 text-[8px] font-bold uppercase tracking-wider text-white">Active</span>
-                        )}
+                        
+                        <div className="flex items-center justify-between border-t border-slate-100 pt-4">
+                          <div className="flex items-center gap-2">
+                            <Shield size={14} className={new Date(v.insuranceExpiry) < new Date() ? 'text-red-500' : 'text-velox-accent'} />
+                            <span className="text-[10px] font-bold text-slate-400">Insurance: {v.insuranceExpiry}</span>
+                          </div>
+                          <span className="text-xs font-bold text-slate-500">Single vehicle account</span>
+                        </div>
                       </div>
-                      
-                      <div className="flex items-center justify-between border-t border-slate-100 pt-4">
-                        <div className="flex items-center gap-2">
-                          <Shield size={14} className={new Date(v.insuranceExpiry) < new Date() ? 'text-red-500' : 'text-velox-accent'} />
-                          <span className="text-[10px] font-bold text-slate-400">Insurance: {v.insuranceExpiry}</span>
-                        </div>
-                        {v.status !== 'active' && (
-                          <button 
-                            onClick={() => {
-                              setDriverVehicles(driverVehicles.map(dv => ({ ...dv, status: dv.id === v.id ? 'active' : 'inactive' })));
-                            }}
-                            className="text-xs font-bold text-velox-primary"
-                          >
-                            Switch to this car
-                          </button>
-                        )}
+                    ))}
+                    {driverVehicles.length === 0 && (
+                      <div className="rounded-3xl border border-dashed border-slate-200 bg-white p-6 text-sm text-slate-500">
+                        No vehicle on file yet. Add your vehicle to continue driver onboarding.
+                      </div>
+                    )}
+                  </div>
+
+                  {driverVehicleAddOpen && (
+                    <div className="mt-6 space-y-4 rounded-3xl border border-velox-primary/20 bg-slate-50/90 p-4">
+                      <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Add vehicle (manual entry)</p>
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">Model</label>
+                        <input
+                          type="text"
+                          value={newVehicleForm.model}
+                          onChange={(e) => setNewVehicleForm((f) => ({ ...f, model: e.target.value }))}
+                          className="w-full rounded-2xl border border-slate-100 bg-white p-3 text-sm font-bold text-slate-900 outline-none focus:border-velox-primary"
+                          placeholder="e.g. Toyota Vitz"
+                          autoComplete="off"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                          Plate / tag number (type exactly as on your vehicle)
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="text"
+                          autoComplete="off"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          value={newVehicleForm.plate}
+                          onChange={(e) => setNewVehicleForm((f) => ({ ...f, plate: e.target.value }))}
+                          className="w-full rounded-2xl border border-slate-100 bg-white p-3 text-sm font-bold text-slate-900 outline-none focus:border-velox-primary"
+                          placeholder="Enter plate or tag number"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">Color</label>
+                        <input
+                          type="text"
+                          value={newVehicleForm.color}
+                          onChange={(e) => setNewVehicleForm((f) => ({ ...f, color: e.target.value }))}
+                          className="w-full rounded-2xl border border-slate-100 bg-white p-3 text-sm font-bold text-slate-900 outline-none focus:border-velox-primary"
+                          placeholder="e.g. Silver"
+                          autoComplete="off"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">Insurance expiry</label>
+                        <input
+                          type="text"
+                          value={newVehicleForm.insuranceExpiry}
+                          onChange={(e) => setNewVehicleForm((f) => ({ ...f, insuranceExpiry: e.target.value }))}
+                          className="w-full rounded-2xl border border-slate-100 bg-white p-3 text-sm font-bold text-slate-900 outline-none focus:border-velox-primary"
+                          placeholder="YYYY-MM-DD"
+                          autoComplete="off"
+                        />
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDriverVehicleAddOpen(false);
+                            setNewVehicleForm({ model: '', plate: '', color: '', insuranceExpiry: '' });
+                          }}
+                          className="flex-1 rounded-2xl border border-slate-200 bg-white py-3 text-sm font-bold text-slate-600"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const model = newVehicleForm.model.trim();
+                            const plate = newVehicleForm.plate.trim();
+                            const color = newVehicleForm.color.trim();
+                            if (!model || !plate || !color) return;
+                            const insuranceExpiry = newVehicleForm.insuranceExpiry.trim() || '2026-12-31';
+                            await driverRideService.updateVehicle({
+                              make: model.split(' ')[0] || model,
+                              model,
+                              color,
+                              tagNumber: plate,
+                              capacity: 4,
+                              insuranceExpiry,
+                            });
+                            setDriverVehicles([
+                              {
+                                id: driverVehicles[0]?.id ?? `v-${Date.now()}`,
+                                model,
+                                plate,
+                                color,
+                                status: 'pending',
+                                insuranceExpiry,
+                              },
+                            ]);
+                            await refreshDriverProfile();
+                            setDriverVehicleAddOpen(false);
+                            setNewVehicleForm({ model: '', plate: '', color: '', insuranceExpiry: '' });
+                          }}
+                          disabled={!newVehicleForm.model.trim() || !newVehicleForm.plate.trim() || !newVehicleForm.color.trim()}
+                          className="flex-1 rounded-2xl bg-velox-primary py-3 text-sm font-bold text-white shadow-md disabled:opacity-50"
+                        >
+                          Save vehicle
+                        </button>
                       </div>
                     </div>
-                  ))}
-                </div>
+                  )}
 
-                <button className="mt-8 flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-900 py-4 font-bold text-white shadow-lg shadow-slate-200">
-                  <Plus size={20} />
-                  Add New Vehicle
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => setDriverVehicleAddOpen((o) => !o)}
+                    className="mt-8 flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-900 py-4 font-bold text-white shadow-lg shadow-slate-200"
+                  >
+                    <Plus size={20} />
+                    {driverVehicleAddOpen ? 'Close vehicle form' : driverVehicles.length > 0 ? 'Update vehicle' : 'Add vehicle'}
+                  </button>
+                </div>
               </motion.div>
             </>
           )}
@@ -2590,15 +3097,16 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[150] h-[80%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[150] velox-bottom-sheet"
               >
-                <div className="mb-6 flex items-center justify-between">
+                <div className="velox-bottom-sheet-head">
                   <h3 className="text-2xl font-bold text-slate-900">Demand Heatmap</h3>
-                  <button onClick={() => setShowHeatmap(false)} className="rounded-full bg-slate-100 p-2">
+                  <button type="button" onClick={() => setShowHeatmap(false)} className="rounded-full bg-slate-100 p-2">
                     <X size={20} />
                   </button>
                 </div>
 
+                <div className="velox-bottom-sheet-scroll">
                 <div className="mb-8 h-48 w-full rounded-3xl bg-slate-100 relative overflow-hidden">
                   <div className="absolute inset-0 opacity-40" style={{ backgroundImage: 'radial-gradient(#94a3b8 1px, transparent 1px)', backgroundSize: '20px 20px' }}></div>
                   {/* Simulated Heatmap Blobs */}
@@ -2623,6 +3131,7 @@ export function MobileAppShell() {
                     </div>
                   ))}
                 </div>
+                </div>
               </motion.div>
             </>
           )}
@@ -2643,15 +3152,16 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[170] h-[85%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[170] velox-bottom-sheet"
               >
-                <div className="mb-8 flex items-center justify-between">
+                <div className="velox-bottom-sheet-head">
                   <h3 className="text-2xl font-bold text-slate-900">Document Vault</h3>
-                  <button onClick={() => setShowDocumentVault(false)} className="rounded-full bg-slate-100 p-2">
+                  <button type="button" onClick={() => setShowDocumentVault(false)} className="rounded-full bg-slate-100 p-2">
                     <X size={20} />
                   </button>
                 </div>
 
+                <div className="velox-bottom-sheet-scroll">
                 <div className="mb-6 rounded-3xl bg-velox-primary/10 p-6">
                   <div className="flex items-center gap-4">
                     <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-velox-primary text-white">
@@ -2703,6 +3213,7 @@ export function MobileAppShell() {
                 <div className="mt-8 rounded-2xl border-2 border-dashed border-slate-200 p-8 text-center">
                   <Plus size={24} className="mx-auto mb-2 text-slate-300" />
                   <p className="text-sm font-bold text-slate-400">Add New Document</p>
+                </div>
                 </div>
               </motion.div>
             </>
@@ -2846,7 +3357,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[270] h-[85%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[270] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-8 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Scheduled Rides</h3>
@@ -2918,7 +3429,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[290] h-[90%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[290] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-8 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Training Academy</h3>
@@ -2980,7 +3491,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[310] h-[60%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[310] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-8 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Navigation</h3>
@@ -3041,7 +3552,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[210] h-[80%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[210] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-8 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Favorite Places</h3>
@@ -3093,7 +3604,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[230] h-[85%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[230] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-8 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Request Payout</h3>
@@ -3175,7 +3686,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[250] h-[80%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[250] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-8 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Promos & Discounts</h3>
@@ -3195,13 +3706,29 @@ export function MobileAppShell() {
                       onChange={(e) => { setPromoCode(e.target.value); setPromoError(''); }}
                     />
                     <button 
-                      onClick={() => {
-                        if (promoCode.toUpperCase() === 'ZEYAGO20') {
-                          setActivePromo({ code: 'ZEYAGO20', discount: 20 });
-                          setPromoCode('');
-                          setPromoError('');
-                        } else {
-                          setPromoError('Invalid promo code');
+                      onClick={async () => {
+                        try {
+                          const promo = await appSettingsService.getPromoSettings();
+                          const inputCode = promoCode.trim().toUpperCase();
+                          const savedCode = promo.code.trim().toUpperCase();
+                          if (
+                            promo.enabled &&
+                            promo.active &&
+                            inputCode.length > 0 &&
+                            inputCode === savedCode
+                          ) {
+                            setActivePromo({
+                              code: promo.code,
+                              discount: promo.discountAmount,
+                              discountType: promo.discountType,
+                            });
+                            setPromoCode('');
+                            setPromoError('');
+                          } else {
+                            setPromoError('Invalid promo code');
+                          }
+                        } catch {
+                          setPromoError('Promo settings unavailable');
                         }
                       }}
                       className="rounded-2xl bg-slate-900 px-6 font-bold text-white"
@@ -3221,7 +3748,11 @@ export function MobileAppShell() {
                         </div>
                         <div>
                           <p className="font-bold text-velox-dark">{activePromo.code} Applied</p>
-                          <p className="text-xs text-velox-primary">{activePromo.discount}% off your next ride</p>
+                          <p className="text-xs text-velox-primary">
+                            {activePromo.discountType === 'fixed'
+                              ? `ETB ${activePromo.discount} off your next ride`
+                              : `${activePromo.discount}% off your next ride`}
+                          </p>
                         </div>
                       </div>
                       <button 
@@ -3274,16 +3805,16 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[150] h-[90%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[150] velox-bottom-sheet"
               >
-                <div className="mb-8 flex items-center justify-between">
+                <div className="velox-bottom-sheet-head">
                   <h3 className="text-2xl font-bold text-slate-900">Performance</h3>
                   <button onClick={() => setShowPerformance(false)} className="rounded-full bg-slate-100 p-2">
                     <X size={20} />
                   </button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto no-scrollbar">
+                <div className="velox-bottom-sheet-scroll">
                   <div className="mb-8 flex flex-col items-center text-center">
                     <div className="mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-yellow-50 text-yellow-500 ring-4 ring-yellow-100">
                       <Star size={40} className="fill-yellow-500" />
@@ -3341,42 +3872,115 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[150] h-[85%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[150] velox-bottom-sheet"
               >
-                <div className="mb-8 flex items-center justify-between">
+                <div className="velox-bottom-sheet-head">
                   <h3 className="text-2xl font-bold text-slate-900">Notifications</h3>
                   <button onClick={() => setShowNotifications(false)} className="rounded-full bg-slate-100 p-2">
                     <X size={20} />
                   </button>
                 </div>
 
-                <div className="space-y-4">
-                  {notifications.map((n) => (
-                    <div 
-                      key={n.id} 
-                      className={`relative rounded-3xl p-5 transition-all ${n.read ? 'bg-slate-50' : 'bg-velox-primary/10 ring-1 ring-velox-accent/20'}`}
-                    >
-                      <div className="mb-2 flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <div
-                            className={`h-2 w-2 rounded-full ${
-                              n.type === 'promo' || n.type === 'success'
-                                ? 'bg-velox-primary/100'
-                                : n.type === 'alert'
-                                  ? 'bg-red-500'
-                                  : n.type === 'warning'
-                                    ? 'bg-amber-500'
-                                    : 'bg-blue-500'
-                            }`}
-                          ></div>
-                          <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{n.type}</span>
+                <div className="velox-bottom-sheet-scroll">
+                  <div className="space-y-6">
+                    {mode === 'driver' && (
+                      <div>
+                        <div className="mb-3 flex items-center justify-between gap-2">
+                          <h4 className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                            Wallet &amp; trips
+                          </h4>
+                          {driverWalletNotifications.some((n) => !n.read) ? (
+                            <button
+                              type="button"
+                              onClick={() => void markDriverWalletNotificationsRead()}
+                              className="text-[10px] font-semibold text-slate-500 underline decoration-slate-300 underline-offset-2 hover:text-slate-800"
+                            >
+                              Mark wallet read
+                            </button>
+                          ) : null}
                         </div>
-                        <span className="text-[10px] text-slate-400">{n.time}</span>
+                        <div className="space-y-3">
+                          {driverWalletNotifications.length === 0 ? (
+                            <p className="rounded-2xl bg-slate-50 px-4 py-4 text-center text-xs text-slate-500">
+                              No wallet updates yet. Balance alerts, top-up results, and trip commissions appear here.
+                            </p>
+                          ) : (
+                            driverWalletNotifications.map((n) => {
+                              const cat = driverWalletNotificationCategory(n.type);
+                              return (
+                                <div
+                                  key={n.id}
+                                  className={`relative rounded-2xl p-4 transition-all ${
+                                    n.read
+                                      ? 'bg-slate-50 ring-1 ring-slate-100'
+                                      : 'bg-violet-50/40 ring-1 ring-violet-200/50'
+                                  }`}
+                                >
+                                  <div className="mb-2 flex items-center justify-between gap-2">
+                                    <div className="flex min-w-0 items-center gap-2">
+                                      <div className={`h-2 w-2 shrink-0 rounded-full ${cat.dotClass}`} />
+                                      <span className="truncate text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                                        {cat.label}
+                                      </span>
+                                    </div>
+                                    <time
+                                      dateTime={n.createdAt}
+                                      className="shrink-0 font-mono text-[10px] text-slate-400"
+                                    >
+                                      {formatDriverWalletNotificationTime(n.createdAt)}
+                                    </time>
+                                  </div>
+                                  <h4 className="mb-1 text-sm font-bold text-slate-900">{n.title}</h4>
+                                  <p className="text-xs leading-relaxed text-slate-600">{n.body}</p>
+                                  {!n.read && (
+                                    <span className="absolute right-3 top-3 h-2 w-2 rounded-full bg-violet-500" />
+                                  )}
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
                       </div>
-                      <h4 className="mb-1 font-bold text-slate-900">{n.title}</h4>
-                      <p className="text-xs text-slate-500 leading-relaxed">{n.message}</p>
+                    )}
+
+                    <div>
+                      {mode === 'driver' && notifications.length > 0 && (
+                        <h4 className="mb-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                          General
+                        </h4>
+                      )}
+                      <div className="space-y-4">
+                        {notifications.map((n) => (
+                          <div
+                            key={n.id}
+                            className={`relative rounded-3xl p-5 transition-all ${n.read ? 'bg-slate-50' : 'bg-velox-primary/10 ring-1 ring-velox-accent/20'}`}
+                          >
+                            <div className="mb-2 flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <div
+                                  className={`h-2 w-2 rounded-full ${
+                                    n.type === 'promo' || n.type === 'success'
+                                      ? 'bg-velox-primary/100'
+                                      : n.type === 'alert'
+                                        ? 'bg-red-500'
+                                        : n.type === 'warning'
+                                          ? 'bg-amber-500'
+                                          : 'bg-blue-500'
+                                  }`}
+                                ></div>
+                                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                                  {n.type}
+                                </span>
+                              </div>
+                              <span className="text-[10px] text-slate-400">{n.time}</span>
+                            </div>
+                            <h4 className="mb-1 font-bold text-slate-900">{n.title}</h4>
+                            <p className="text-xs leading-relaxed text-slate-500">{n.message}</p>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  ))}
+                  </div>
                 </div>
               </motion.div>
             </>
@@ -3398,73 +4002,77 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[190] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[190] velox-bottom-sheet"
               >
-                <div className="mb-8 flex items-center justify-between">
+                <div className="velox-bottom-sheet-head">
                   <h3 className="text-2xl font-bold text-slate-900">Heading Home</h3>
                   <button onClick={() => setShowDestinationFilter(false)} className="rounded-full bg-slate-100 p-2">
                     <X size={20} />
                   </button>
                 </div>
 
-                <div className="mb-8 flex flex-col items-center text-center">
-                  <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-velox-primary/10 text-velox-primary">
-                    <Navigation size={40} />
-                  </div>
-                  <h4 className="mb-2 text-xl font-bold text-slate-900">Set Your Destination</h4>
-                  <p className="text-sm text-slate-500 leading-relaxed">
-                    We'll only show you requests moving towards your destination. You have <span className="font-bold text-velox-primary">{filterUsesLeft} uses</span> left today.
-                  </p>
-                </div>
-
-                {destinationFilter ? (
-                  <div className="mb-8 rounded-3xl bg-velox-primary/10 p-6">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="h-10 w-10 rounded-full bg-white flex items-center justify-center text-velox-primary shadow-sm">
-                          <Home size={20} />
-                        </div>
-                        <div>
-                          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Active Filter</p>
-                          <p className="font-bold text-slate-900">{destinationFilter}</p>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => setDestinationFilter(null)}
-                        className="text-xs font-bold text-red-500"
-                      >
-                        Remove
-                      </button>
+                <div className="velox-bottom-sheet-scroll">
+                  <div className="mb-8 flex flex-col items-center text-center">
+                    <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-velox-primary/10 text-velox-primary">
+                      <Navigation size={40} />
                     </div>
+                    <h4 className="mb-2 text-xl font-bold text-slate-900">Set Your Destination</h4>
+                    <p className="text-sm text-slate-500 leading-relaxed">
+                      We'll only show you requests moving towards your destination. You have <span className="font-bold text-velox-primary">{filterUsesLeft} uses</span> left today.
+                    </p>
                   </div>
-                ) : (
-                  <div className="mb-8 space-y-4">
-                    {['Bole', 'Piazza', 'Kazanchis', 'Sarbet'].map((loc) => (
-                      <button 
-                        key={loc}
-                        onClick={() => {
-                          if (filterUsesLeft > 0) {
-                            setDestinationFilter(loc);
-                            setFilterUsesLeft(prev => prev - 1);
-                            setShowDestinationFilter(false);
-                          }
-                        }}
-                        disabled={filterUsesLeft === 0}
-                        className="flex w-full items-center gap-4 rounded-2xl border border-slate-100 bg-slate-50 p-4 transition-all hover:border-velox-primary/15 hover:bg-velox-primary/10 disabled:opacity-50"
-                      >
-                        <MapPin size={20} className="text-slate-400" />
-                        <span className="font-bold text-slate-900">{loc}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
 
-                <button 
-                  onClick={() => setShowDestinationFilter(false)}
-                  className="w-full rounded-2xl bg-slate-900 py-4 font-bold text-white shadow-lg shadow-slate-200"
-                >
-                  Close
-                </button>
+                  {destinationFilter ? (
+                    <div className="mb-8 rounded-3xl bg-velox-primary/10 p-6">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-velox-primary shadow-sm">
+                            <Home size={20} />
+                          </div>
+                          <div>
+                            <p className="text-xs font-bold uppercase tracking-widest text-slate-400">Active Filter</p>
+                            <p className="font-bold text-slate-900">{destinationFilter}</p>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={() => setDestinationFilter(null)}
+                          className="text-xs font-bold text-red-500"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mb-8 space-y-4">
+                      {['Bole', 'Piazza', 'Kazanchis', 'Sarbet'].map((loc) => (
+                        <button 
+                          key={loc}
+                          type="button"
+                          onClick={() => {
+                            if (filterUsesLeft > 0) {
+                              setDestinationFilter(loc);
+                              setFilterUsesLeft(prev => prev - 1);
+                              setShowDestinationFilter(false);
+                            }
+                          }}
+                          disabled={filterUsesLeft === 0}
+                          className="flex w-full items-center gap-4 rounded-2xl border border-slate-100 bg-slate-50 p-4 transition-all hover:border-velox-primary/15 hover:bg-velox-primary/10 disabled:opacity-50"
+                        >
+                          <MapPin size={20} className="text-slate-400" />
+                          <span className="font-bold text-slate-900">{loc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <button 
+                    type="button"
+                    onClick={() => setShowDestinationFilter(false)}
+                    className="w-full rounded-2xl bg-slate-900 py-4 font-bold text-white shadow-lg shadow-slate-200"
+                  >
+                    Close
+                  </button>
+                </div>
               </motion.div>
             </>
           )}
@@ -3485,64 +4093,66 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[190] h-[90%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[190] velox-bottom-sheet"
               >
-                <div className="mb-8 flex items-center justify-between">
+                <div className="velox-bottom-sheet-head">
                   <h3 className="text-2xl font-bold text-slate-900">Maintenance</h3>
-                  <button onClick={() => setShowMaintenanceTracker(false)} className="rounded-full bg-slate-100 p-2">
+                  <button type="button" onClick={() => setShowMaintenanceTracker(false)} className="rounded-full bg-slate-100 p-2">
                     <X size={20} />
                   </button>
                 </div>
 
-                <div className="mb-8 grid grid-cols-2 gap-4">
-                  <div className="rounded-3xl bg-slate-50 p-6 text-center">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Active KM</p>
-                    <p className="text-2xl font-black text-slate-900">{activeKm.toLocaleString()}</p>
+                <div className="velox-bottom-sheet-scroll">
+                  <div className="mb-8 grid grid-cols-2 gap-4">
+                    <div className="rounded-3xl bg-slate-50 p-6 text-center">
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Active KM</p>
+                      <p className="text-2xl font-black text-slate-900">{activeKm.toLocaleString()}</p>
+                    </div>
+                    <div className="rounded-3xl bg-velox-primary/10 p-6 text-center">
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-velox-primary">Next Service</p>
+                      <p className="text-2xl font-black text-velox-primary">{(activeKm + 500).toLocaleString()}</p>
+                    </div>
                   </div>
-                  <div className="rounded-3xl bg-velox-primary/10 p-6 text-center">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-velox-primary">Next Service</p>
-                    <p className="text-2xl font-black text-velox-primary">{(activeKm + 500).toLocaleString()}</p>
-                  </div>
-                </div>
 
-                <div className="mb-8 space-y-4">
-                  <h4 className="text-sm font-bold uppercase tracking-widest text-slate-400">Recent Logs</h4>
-                  <div className="space-y-3">
-                    {maintenanceLogs.map((log) => (
-                      <div key={log.id} className="flex items-center justify-between rounded-2xl border border-slate-100 p-4">
-                        <div className="flex items-center gap-3">
-                          <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${log.type === 'fuel' ? 'bg-blue-50 text-blue-600' : 'bg-orange-50 text-orange-600'}`}>
-                            {log.type === 'fuel' ? <DollarSign size={18} /> : <Settings2 size={18} />}
+                  <div className="mb-8 space-y-4">
+                    <h4 className="text-sm font-bold uppercase tracking-widest text-slate-400">Recent Logs</h4>
+                    <div className="space-y-3">
+                      {maintenanceLogs.map((log) => (
+                        <div key={log.id} className="flex items-center justify-between rounded-2xl border border-slate-100 p-4">
+                          <div className="flex items-center gap-3">
+                            <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${log.type === 'fuel' ? 'bg-blue-50 text-blue-600' : 'bg-orange-50 text-orange-600'}`}>
+                              {log.type === 'fuel' ? <DollarSign size={18} /> : <Settings2 size={18} />}
+                            </div>
+                            <div>
+                              <p className="text-sm font-bold text-slate-900">{log.type === 'fuel' ? 'Fuel Refill' : 'Oil Change'}</p>
+                              <p className="text-[10px] text-slate-500">{log.date} • {log.km} KM</p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-sm font-bold text-slate-900">{log.type === 'fuel' ? 'Fuel Refill' : 'Oil Change'}</p>
-                            <p className="text-[10px] text-slate-500">{log.date} • {log.km} KM</p>
-                          </div>
+                          <p className="font-bold text-slate-900">ETB {log.amount}</p>
                         </div>
-                        <p className="font-bold text-slate-900">ETB {log.amount}</p>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
-                </div>
 
-                <div className="space-y-4">
-                  <h4 className="text-sm font-bold uppercase tracking-widest text-slate-400">Reminders</h4>
-                  <div className="rounded-3xl border border-orange-100 bg-orange-50/30 p-6">
-                    <div className="flex items-start gap-4">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-orange-100 text-orange-600">
-                        <AlertTriangle size={20} />
-                      </div>
-                      <div>
-                        <p className="font-bold text-slate-900">Tire Rotation Due</p>
-                        <p className="text-xs text-slate-500 leading-relaxed">Your last tire rotation was at 8,000 KM. It's recommended every 5,000 KM.</p>
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-bold uppercase tracking-widest text-slate-400">Reminders</h4>
+                    <div className="rounded-3xl border border-orange-100 bg-orange-50/30 p-6">
+                      <div className="flex items-start gap-4">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-orange-100 text-orange-600">
+                          <AlertTriangle size={20} />
+                        </div>
+                        <div>
+                          <p className="font-bold text-slate-900">Tire Rotation Due</p>
+                          <p className="text-xs text-slate-500 leading-relaxed">Your last tire rotation was at 8,000 KM. It's recommended every 5,000 KM.</p>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
 
-                <button className="mt-8 w-full rounded-2xl bg-slate-900 py-4 font-bold text-white shadow-lg shadow-slate-200">
-                  Add New Log
-                </button>
+                  <button type="button" className="mt-8 w-full rounded-2xl bg-slate-900 py-4 font-bold text-white shadow-lg shadow-slate-200">
+                    Add New Log
+                  </button>
+                </div>
               </motion.div>
             </>
           )}
@@ -3563,63 +4173,66 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[190] h-[85%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[190] velox-bottom-sheet"
               >
-                <div className="mb-8 flex items-center justify-between">
+                <div className="velox-bottom-sheet-head">
                   <h3 className="text-2xl font-bold text-slate-900">Driver Tiers</h3>
-                  <button onClick={() => setShowTiers(false)} className="rounded-full bg-slate-100 p-2">
+                  <button type="button" onClick={() => setShowTiers(false)} className="rounded-full bg-slate-100 p-2">
                     <X size={20} />
                   </button>
                 </div>
 
-                <div className="mb-8 flex flex-col items-center text-center">
-                  <div className="relative mb-6">
-                    <div className="flex h-24 w-24 items-center justify-center rounded-full bg-velox-primary/10 text-velox-primary ring-8 ring-velox-accent/25/50">
-                      <Award size={48} />
+                <div className="velox-bottom-sheet-scroll">
+                  <div className="mb-8 flex flex-col items-center text-center">
+                    <div className="relative mb-6">
+                      <div className="flex h-24 w-24 items-center justify-center rounded-full bg-velox-primary/10 text-velox-primary ring-8 ring-velox-accent/25/50">
+                        <Award size={48} />
+                      </div>
+                      <div className="absolute -bottom-2 -right-2 rounded-full bg-velox-primary px-3 py-1 text-[10px] font-bold text-white shadow-lg">
+                        {driverTier}
+                      </div>
                     </div>
-                    <div className="absolute -bottom-2 -right-2 rounded-full bg-velox-primary px-3 py-1 text-[10px] font-bold text-white shadow-lg">
-                      {driverTier}
-                    </div>
+                    <h4 className="mb-2 text-2xl font-black text-slate-900">You're a Pro Driver!</h4>
+                    <p className="text-sm text-slate-500 leading-relaxed">
+                      Maintain your 4.9+ rating and low cancellation rate to reach <span className="font-bold text-velox-primary">Elite</span> status.
+                    </p>
                   </div>
-                  <h4 className="mb-2 text-2xl font-black text-slate-900">You're a Pro Driver!</h4>
-                  <p className="text-sm text-slate-500 leading-relaxed">
-                    Maintain your 4.9+ rating and low cancellation rate to reach <span className="font-bold text-velox-primary">Elite</span> status.
-                  </p>
-                </div>
 
-                <div className="space-y-4">
-                  {[
-                    { tier: 'Standard', status: 'completed', benefits: ['Standard Commission (20%)', 'Basic Support'] },
-                    { tier: 'Pro', status: 'active', benefits: ['Reduced Commission (15%)', 'Priority Support', 'Fuel Discounts'] },
-                    { tier: 'Elite', status: 'locked', benefits: ['Lowest Commission (10%)', 'Airport Priority', 'Monthly Bonus'] },
-                  ].map((t) => (
-                    <div 
-                      key={t.tier}
-                      className={`rounded-3xl border p-6 transition-all ${t.status === 'active' ? 'border-velox-primary bg-velox-primary/10' : 'border-slate-100 bg-white opacity-60'}`}
-                    >
-                      <div className="mb-4 flex items-center justify-between">
-                        <h5 className="text-lg font-bold text-slate-900">{t.tier}</h5>
-                        {t.status === 'active' && <span className="text-xs font-bold text-velox-primary">Current Tier</span>}
-                        {t.status === 'locked' && <Lock size={16} className="text-slate-400" />}
+                  <div className="space-y-4">
+                    {[
+                      { tier: 'Standard', status: 'completed', benefits: ['Standard Commission (20%)', 'Basic Support'] },
+                      { tier: 'Pro', status: 'active', benefits: ['Reduced Commission (15%)', 'Priority Support', 'Fuel Discounts'] },
+                      { tier: 'Elite', status: 'locked', benefits: ['Lowest Commission (10%)', 'Airport Priority', 'Monthly Bonus'] },
+                    ].map((t) => (
+                      <div 
+                        key={t.tier}
+                        className={`rounded-3xl border p-6 transition-all ${t.status === 'active' ? 'border-velox-primary bg-velox-primary/10' : 'border-slate-100 bg-white opacity-60'}`}
+                      >
+                        <div className="mb-4 flex items-center justify-between">
+                          <h5 className="text-lg font-bold text-slate-900">{t.tier}</h5>
+                          {t.status === 'active' && <span className="text-xs font-bold text-velox-primary">Current Tier</span>}
+                          {t.status === 'locked' && <Lock size={16} className="text-slate-400" />}
+                        </div>
+                        <div className="space-y-2">
+                          {t.benefits.map((b, i) => (
+                            <div key={i} className="flex items-center gap-2">
+                              <CheckCircle size={14} className={t.status === 'locked' ? 'text-slate-300' : 'text-velox-accent'} />
+                              <span className="text-xs text-slate-600">{b}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                      <div className="space-y-2">
-                        {t.benefits.map((b, i) => (
-                          <div key={i} className="flex items-center gap-2">
-                            <CheckCircle size={14} className={t.status === 'locked' ? 'text-slate-300' : 'text-velox-accent'} />
-                            <span className="text-xs text-slate-600">{b}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
 
-                <button 
-                  onClick={() => setShowTiers(false)}
-                  className="mt-8 w-full rounded-2xl bg-velox-primary py-4 font-bold text-white shadow-lg shadow-[0_8px_24px_rgba(75,44,109,0.18)]"
-                >
-                  View My Progress
-                </button>
+                  <button 
+                    type="button"
+                    onClick={() => setShowTiers(false)}
+                    className="mt-8 w-full rounded-2xl bg-velox-primary py-4 font-bold text-white shadow-lg shadow-[0_8px_24px_rgba(75,44,109,0.18)]"
+                  >
+                    View My Progress
+                  </button>
+                </div>
               </motion.div>
             </>
           )}
@@ -3640,48 +4253,52 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[190] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[190] velox-bottom-sheet"
               >
-                <div className="mb-8 flex items-center justify-between">
+                <div className="velox-bottom-sheet-head">
                   <h3 className="text-2xl font-bold text-slate-900">Ride Preferences</h3>
-                  <button onClick={() => setShowRidePreferences(false)} className="rounded-full bg-slate-100 p-2">
+                  <button type="button" onClick={() => setShowRidePreferences(false)} className="rounded-full bg-slate-100 p-2">
                     <X size={20} />
                   </button>
                 </div>
 
-                <div className="space-y-4">
-                  {[
-                    { id: 'quietRide', label: 'Quiet Ride', description: 'Prefer a silent journey', icon: MessageSquareOff },
-                    { id: 'acOn', label: 'AC On', description: 'Request air conditioning', icon: Wind },
-                    { id: 'luggageSpace', label: 'Luggage Space', description: 'Need space for bags', icon: Luggage },
-                  ].map((pref) => (
-                    <button 
-                      key={pref.id}
-                      onClick={() => setRidePreferences(prev => ({ ...prev, [pref.id]: !prev[pref.id as keyof typeof prev] }))}
-                      className={`flex w-full items-center justify-between rounded-2xl border p-4 transition-all ${ridePreferences[pref.id as keyof typeof ridePreferences] ? 'border-velox-primary bg-velox-primary/10' : 'border-slate-100 bg-white'}`}
-                    >
-                      <div className="flex items-center gap-4">
-                        <div className={`flex h-12 w-12 items-center justify-center rounded-xl ${ridePreferences[pref.id as keyof typeof ridePreferences] ? 'bg-velox-primary text-white' : 'bg-slate-100 text-slate-600'}`}>
-                          <pref.icon size={24} />
+                <div className="velox-bottom-sheet-scroll">
+                  <div className="space-y-4">
+                    {[
+                      { id: 'quietRide', label: 'Quiet Ride', description: 'Prefer a silent journey', icon: MessageSquareOff },
+                      { id: 'acOn', label: 'AC On', description: 'Request air conditioning', icon: Wind },
+                      { id: 'luggageSpace', label: 'Luggage Space', description: 'Need space for bags', icon: Luggage },
+                    ].map((pref) => (
+                      <button 
+                        key={pref.id}
+                        type="button"
+                        onClick={() => setRidePreferences(prev => ({ ...prev, [pref.id]: !prev[pref.id as keyof typeof prev] }))}
+                        className={`flex w-full items-center justify-between rounded-2xl border p-4 transition-all ${ridePreferences[pref.id as keyof typeof ridePreferences] ? 'border-velox-primary bg-velox-primary/10' : 'border-slate-100 bg-white'}`}
+                      >
+                        <div className="flex items-center gap-4">
+                          <div className={`flex h-12 w-12 items-center justify-center rounded-xl ${ridePreferences[pref.id as keyof typeof ridePreferences] ? 'bg-velox-primary text-white' : 'bg-slate-100 text-slate-600'}`}>
+                            <pref.icon size={24} />
+                          </div>
+                          <div className="text-left">
+                            <p className="font-bold text-slate-900">{pref.label}</p>
+                            <p className="text-xs text-slate-500">{pref.description}</p>
+                          </div>
                         </div>
-                        <div className="text-left">
-                          <p className="font-bold text-slate-900">{pref.label}</p>
-                          <p className="text-xs text-slate-500">{pref.description}</p>
+                        <div className={`flex h-6 w-6 items-center justify-center rounded-full border-2 transition-all ${ridePreferences[pref.id as keyof typeof ridePreferences] ? 'border-velox-primary bg-velox-primary' : 'border-slate-200'}`}>
+                          {ridePreferences[pref.id as keyof typeof ridePreferences] && <Check size={14} className="text-white" />}
                         </div>
-                      </div>
-                      <div className={`h-6 w-6 rounded-full border-2 flex items-center justify-center transition-all ${ridePreferences[pref.id as keyof typeof ridePreferences] ? 'border-velox-primary bg-velox-primary' : 'border-slate-200'}`}>
-                        {ridePreferences[pref.id as keyof typeof ridePreferences] && <Check size={14} className="text-white" />}
-                      </div>
-                    </button>
-                  ))}
-                </div>
+                      </button>
+                    ))}
+                  </div>
 
-                <button 
-                  onClick={() => setShowRidePreferences(false)}
-                  className="mt-8 w-full rounded-2xl bg-velox-primary py-4 font-bold text-white shadow-lg shadow-[0_8px_24px_rgba(75,44,109,0.18)]"
-                >
-                  Save Preferences
-                </button>
+                  <button 
+                    type="button"
+                    onClick={() => setShowRidePreferences(false)}
+                    className="mt-8 w-full rounded-2xl bg-velox-primary py-4 font-bold text-white shadow-lg shadow-[0_8px_24px_rgba(75,44,109,0.18)]"
+                  >
+                    Save Preferences
+                  </button>
+                </div>
               </motion.div>
             </>
           )}
@@ -3702,56 +4319,59 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[190] h-[85%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[190] velox-bottom-sheet"
               >
-                <div className="mb-8 flex items-center justify-between">
+                <div className="velox-bottom-sheet-head">
                   <h3 className="text-2xl font-bold text-slate-900">Zeyago Pass</h3>
-                  <button onClick={() => setShowZeyagoPass(false)} className="rounded-full bg-slate-100 p-2">
+                  <button type="button" onClick={() => setShowZeyagoPass(false)} className="rounded-full bg-slate-100 p-2">
                     <X size={20} />
                   </button>
                 </div>
 
-                <div className="mb-8 overflow-hidden rounded-3xl bg-velox-primary p-6 text-white relative">
-                  <Zap size={120} className="absolute -right-8 -top-8 opacity-10 rotate-12" />
-                  <div className="relative z-10">
-                    <h4 className="text-2xl font-black">Monthly Pass</h4>
-                    <p className="mt-2 text-sm opacity-90">Enjoy zero surge pricing and priority pickups across Addis Ababa.</p>
-                    <div className="mt-6 flex items-baseline gap-1">
-                      <span className="text-3xl font-black">ETB 499</span>
-                      <span className="text-sm opacity-70">/ month</span>
+                <div className="velox-bottom-sheet-scroll">
+                  <div className="mb-8 overflow-hidden rounded-3xl bg-velox-primary p-6 text-white relative">
+                    <Zap size={120} className="absolute -right-8 -top-8 opacity-10 rotate-12" />
+                    <div className="relative z-10">
+                      <h4 className="text-2xl font-black">Monthly Pass</h4>
+                      <p className="mt-2 text-sm opacity-90">Enjoy zero surge pricing and priority pickups across Addis Ababa.</p>
+                      <div className="mt-6 flex items-baseline gap-1">
+                        <span className="text-3xl font-black">ETB 499</span>
+                        <span className="text-sm opacity-70">/ month</span>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="space-y-6">
-                  <h4 className="text-sm font-bold uppercase tracking-widest text-slate-400">What's Included</h4>
-                  {[
-                    { icon: Zap, title: 'No Surge Pricing', desc: 'Pay standard rates even during peak hours in Bole, Piazza & Kazanchis.' },
-                    { icon: Clock, title: 'Priority Pickup', desc: 'Get matched with the nearest drivers 20% faster.' },
-                    { icon: ShieldCheck, title: 'Premium Support', desc: '24/7 dedicated support line for Pass members.' },
-                  ].map((benefit, i) => (
-                    <div key={i} className="flex gap-4">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-velox-primary/10 text-velox-primary">
-                        <benefit.icon size={20} />
+                  <div className="space-y-6">
+                    <h4 className="text-sm font-bold uppercase tracking-widest text-slate-400">What's Included</h4>
+                    {[
+                      { icon: Zap, title: 'No Surge Pricing', desc: 'Pay standard rates even during peak hours in Bole, Piazza & Kazanchis.' },
+                      { icon: Clock, title: 'Priority Pickup', desc: 'Get matched with the nearest drivers 20% faster.' },
+                      { icon: ShieldCheck, title: 'Premium Support', desc: '24/7 dedicated support line for Pass members.' },
+                    ].map((benefit, i) => (
+                      <div key={i} className="flex gap-4">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-velox-primary/10 text-velox-primary">
+                          <benefit.icon size={20} />
+                        </div>
+                        <div>
+                          <p className="font-bold text-slate-900">{benefit.title}</p>
+                          <p className="text-xs text-slate-500 leading-relaxed">{benefit.desc}</p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="font-bold text-slate-900">{benefit.title}</p>
-                        <p className="text-xs text-slate-500 leading-relaxed">{benefit.desc}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
 
-                <button 
-                  onClick={() => {
-                    setHasZeyagoPass(true);
-                    setShowZeyagoPass(false);
-                    alert('Welcome to Zeyago Pass! Your benefits are now active.');
-                  }}
-                  className="mt-auto w-full rounded-2xl bg-velox-primary py-4 font-bold text-white shadow-lg shadow-[0_8px_24px_rgba(75,44,109,0.18)]"
-                >
-                  {hasZeyagoPass ? 'Manage Subscription' : 'Subscribe Now'}
-                </button>
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      setHasZeyagoPass(true);
+                      setShowZeyagoPass(false);
+                      alert('Welcome to Zeyago Pass! Your benefits are now active.');
+                    }}
+                    className="mt-8 w-full rounded-2xl bg-velox-primary py-4 font-bold text-white shadow-lg shadow-[0_8px_24px_rgba(75,44,109,0.18)]"
+                  >
+                    {hasZeyagoPass ? 'Manage Subscription' : 'Subscribe Now'}
+                  </button>
+                </div>
               </motion.div>
             </>
           )}
@@ -3772,9 +4392,9 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[130] h-[90%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl overflow-y-auto"
+                className="absolute inset-x-0 bottom-0 z-[130] velox-bottom-sheet"
               >
-                <div className="mb-8 flex items-center justify-between">
+                <div className="velox-bottom-sheet-head">
                   <div className="flex items-center gap-3">
                     <div className="rounded-2xl bg-blue-50 p-3 text-blue-600">
                       <Building2 size={24} />
@@ -3785,6 +4405,7 @@ export function MobileAppShell() {
                     </div>
                   </div>
                   <button 
+                    type="button"
                     onClick={() => setShowCorporateDashboard(false)} 
                     className="rounded-full bg-slate-100 p-2"
                   >
@@ -3792,6 +4413,7 @@ export function MobileAppShell() {
                   </button>
                 </div>
 
+                <div className="velox-bottom-sheet-scroll">
                 {/* Spending Summary */}
                 <div className="mb-8 grid grid-cols-2 gap-4">
                   <div className="rounded-3xl bg-slate-50 p-6">
@@ -3887,9 +4509,10 @@ export function MobileAppShell() {
                   </div>
                 </div>
 
-                <button className="w-full rounded-2xl bg-slate-900 py-4 font-bold text-white shadow-lg shadow-slate-200">
+                <button type="button" className="w-full rounded-2xl bg-slate-900 py-4 font-bold text-white shadow-lg shadow-slate-200">
                   Export Full Report
                 </button>
+                </div>
               </motion.div>
             </>
           )}
@@ -3897,7 +4520,7 @@ export function MobileAppShell() {
 
         {/* PIN Verification Modal (Driver) */}
         <AnimatePresence>
-          {showPinVerification && (
+          {requireRideSafetyPin && showPinVerification && (
             <>
               <motion.div 
                 initial={{ opacity: 0 }}
@@ -3910,7 +4533,7 @@ export function MobileAppShell() {
                 initial={{ scale: 0.9, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.9, opacity: 0 }}
-                className="absolute left-1/2 top-1/2 z-[210] w-[85%] -translate-x-1/2 -translate-y-1/2 rounded-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute left-1/2 top-1/2 z-[210] max-h-[min(85vh,720px)] w-[85%] -translate-x-1/2 -translate-y-1/2 overflow-y-auto overscroll-y-contain rounded-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-6 text-center">
                   <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-velox-primary/10 text-velox-primary">
@@ -3940,27 +4563,54 @@ export function MobileAppShell() {
                           }
                         }
                       }}
-                      className="h-14 w-12 rounded-xl border-2 border-slate-100 text-center text-2xl font-black text-slate-900 focus:border-velox-primary outline-none transition-all"
+                      className="h-16 w-14 rounded-2xl border-2 border-slate-300 bg-slate-50 text-center text-2xl font-black tracking-[0.08em] text-slate-900 shadow-[0_8px_20px_rgba(15,23,42,0.08)] outline-none transition-all focus:border-velox-primary focus:bg-white focus:ring-4 focus:ring-velox-primary/15"
                     />
                   ))}
                 </div>
 
                 <div className="flex gap-3">
                   <button 
-                    onClick={() => setShowPinVerification(false)}
+                    onClick={() => {
+                      setEnteredPin(['', '', '', '']);
+                      setShowPinVerification(false);
+                    }}
                     className="flex-1 rounded-2xl bg-slate-100 py-4 font-bold text-slate-600"
                   >
                     Cancel
                   </button>
                   <button 
-                    onClick={() => {
+                    onClick={async () => {
                       if (enteredPin.join('') === ridePin) {
-                        setIsPinVerified(true);
-                        setShowPinVerification(false);
-                        const next = driverNavAfterTripStart(currentRide);
-                        setNavStep(next.step);
-                        setNavStopLegIndex(next.stopIndex);
-                        setEnteredPin(['', '', '', '']);
+                        try {
+                          let nextRide = currentRide;
+                          if (activeTripId) {
+                            const res = await driverRideService.tripStart(activeTripId);
+                            setCurrentRide(res.trip.ride);
+                            nextRide = res.trip.ride;
+                          }
+                          setIsPinVerified(true);
+                          setShowPinVerification(false);
+                          const next = driverNavAfterTripStart(nextRide);
+                          setNavStep(next.step);
+                          setNavStopLegIndex(next.stopIndex);
+                          setRideStatus('ongoing');
+                          setEnteredPin(['', '', '', '']);
+                        } catch {
+                          if (currentRide) {
+                            const nextRide = {
+                              ...currentRide,
+                              status: 'in_progress' as const,
+                            };
+                            setCurrentRide(nextRide);
+                            setIsPinVerified(true);
+                            setShowPinVerification(false);
+                            const next = driverNavAfterTripStart(nextRide);
+                            setNavStep(next.step);
+                            setNavStopLegIndex(next.stopIndex);
+                            setRideStatus('ongoing');
+                            setEnteredPin(['', '', '', '']);
+                          }
+                        }
                       } else {
                         alert('Invalid PIN. Please check with the rider.');
                       }
@@ -3990,7 +4640,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[190] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[190] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-8 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Business Profile</h3>
@@ -4061,7 +4711,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[190] h-[85%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[190] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-8 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Zeyago Rewards</h3>
@@ -4129,7 +4779,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[190] h-[70%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[190] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-8 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Safety Toolkit</h3>
@@ -4201,7 +4851,7 @@ export function MobileAppShell() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
-                className="absolute inset-x-0 bottom-0 z-[150] h-[80%] rounded-t-[2.5rem] bg-white p-8 shadow-2xl"
+                className="absolute inset-x-0 bottom-0 z-[150] max-h-[min(92vh,760px)] min-h-0 overflow-y-auto overscroll-y-contain rounded-t-[2.5rem] bg-white p-8 shadow-2xl [-webkit-overflow-scrolling:touch]"
               >
                 <div className="mb-8 flex items-center justify-between">
                   <h3 className="text-2xl font-bold text-slate-900">Refer & Earn</h3>

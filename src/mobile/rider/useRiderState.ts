@@ -9,6 +9,7 @@ import {
 } from '../constants/riderDefaults';
 import { toCompletedRide } from '../services/rides/rideLifecycle';
 import { buildWalletTransactionFromRide } from '../utils/walletFromRide';
+import { mapApiRideStatusToUi } from '../utils/rideUiPhase';
 import type { LatLng, RideSummary } from '../types/api';
 import type {
   ActiveDriverInfo,
@@ -20,6 +21,8 @@ import type {
   SelectedVehicleId,
   WalletTransaction,
 } from '../types/mobile';
+
+const RIDER_REQUEST_DEBUG = import.meta.env.DEV;
 
 export function useRiderState(
   setShowRating: (value: boolean) => void,
@@ -40,6 +43,8 @@ export function useRiderState(
    * Gates the request / vehicle sheet so typing alone does not open it.
    */
   const [destinationCommitted, setDestinationCommitted] = useState(false);
+  /** Rider active trip bottom card: collapsed = more map; expanded = full trip UI (default). */
+  const [riderActiveTripPanelCollapsed, setRiderActiveTripPanelCollapsed] = useState(false);
   /** Rider home “Where to?” panel: taller while searching so suggestions stay usable (shell reads this for max-height). */
   const [riderWhereToSearchExpanded, setRiderWhereToSearchExpanded] = useState(false);
   /** Full-screen planning sheet (pickup / destination / saved) — presentation only. */
@@ -116,6 +121,51 @@ export function useRiderState(
   }, [showSOS, sosCountdown]);
 
   useEffect(() => {
+    if (rideStatus === 'idle' || rideStatus === 'completed') {
+      setRiderActiveTripPanelCollapsed(false);
+    }
+  }, [rideStatus]);
+
+  useEffect(() => {
+    if (!currentRide?.status) return;
+    const mappedSharedPhase = mapApiRideStatusToUi(currentRide.status);
+    if (rideStatus === mappedSharedPhase) return;
+    setRideStatus(mappedSharedPhase);
+  }, [currentRide?.status, rideStatus]);
+
+  useEffect(() => {
+    setEnteredPin(['', '', '', '']);
+    setIsPinVerified(false);
+  }, [currentRide?.id]);
+
+  useEffect(() => {
+    if (!RIDER_REQUEST_DEBUG) return;
+    console.log('[useRiderState] rideStatus changed', {
+      rideStatus,
+      currentRideId: currentRide?.id ?? null,
+      currentRideApiStatus: currentRide?.status ?? null,
+    });
+  }, [rideStatus, currentRide?.id, currentRide?.status]);
+
+  useEffect(() => {
+    if (!RIDER_REQUEST_DEBUG) return;
+    console.log('[useRiderState] currentRide/currentRideId changed', {
+      currentRideId: currentRide?.id ?? null,
+      currentRideApiStatus: currentRide?.status ?? null,
+      pickup: currentRide?.pickup ?? null,
+      destination: currentRide?.destination ?? null,
+    });
+  }, [currentRide]);
+
+  useEffect(() => {
+    if (!RIDER_REQUEST_DEBUG) return;
+    console.log('[useRiderState] destinationCommitted changed', {
+      destinationCommitted,
+      destination,
+    });
+  }, [destinationCommitted, destination]);
+
+  useEffect(() => {
     setStopCoords((prev) =>
       stops.map((_, i) => (i < prev.length ? prev[i] ?? null : null)),
     );
@@ -139,6 +189,8 @@ export function useRiderState(
     setDestinationPlaceId,
     destinationCommitted,
     setDestinationCommitted,
+    riderActiveTripPanelCollapsed,
+    setRiderActiveTripPanelCollapsed,
     riderWhereToSearchExpanded,
     setRiderWhereToSearchExpanded,
     riderPlanningSheetOpen,

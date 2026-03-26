@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsString, ValidateNested } from 'class-validator';
+import { IsBoolean, IsString, ValidateNested } from 'class-validator';
 import { SessionUserDto } from '../../common/dto/session-user.dto';
 
 export class VerifyOtpResponseDto {
@@ -16,4 +16,10 @@ export class VerifyOtpResponseDto {
   /** ISO 8601 */
   @IsString()
   expiresAt!: string;
+
+  @IsBoolean()
+  registrationRequired!: boolean;
+
+  @IsString()
+  authFlow!: 'login' | 'register';
 }

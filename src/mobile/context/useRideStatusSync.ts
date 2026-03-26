@@ -9,7 +9,9 @@ import {
   emitMockDriverRequestEvent,
   publishRideSnapshotTransition,
 } from '../services/rides/rideEvents';
-import { mapApiRideStatusToUi, maxRiderUiPhase } from '../utils/rideUiPhase';
+import { mapApiRideStatusToUi } from '../utils/rideUiPhase';
+
+const RIDER_REQUEST_DEBUG = import.meta.env.DEV;
 
 const RIDER_POLL_MS = 2500;
 const DRIVER_LIST_POLL_MS = 2800;
@@ -38,9 +40,6 @@ export function useRideStatusSync(): void {
 
   const rideIdRef = useRef<string | undefined>(undefined);
   rideIdRef.current = currentRide?.id;
-
-  const rideStatusRef = useRef(rideStatus);
-  rideStatusRef.current = rideStatus;
 
   const lastPolledRideRef = useRef<RideSummary | null>(null);
   const lastDriverIncomingRequestIdRef = useRef<string | undefined>(undefined);
@@ -81,6 +80,12 @@ export function useRideStatusSync(): void {
       if (!id) return;
       try {
         const { ride } = await riderRideService.getRide(id);
+        if (RIDER_REQUEST_DEBUG) {
+          console.log('[useRideStatusSync] rider poll success', {
+            rideId: ride.id,
+            rideStatus: ride.status,
+          });
+        }
         const prevSnap = lastPolledRideRef.current;
         const prevForTransition =
           prevSnap && prevSnap.id === ride.id ? prevSnap : null;
@@ -94,21 +99,34 @@ export function useRideStatusSync(): void {
         lastPolledRideRef.current = ride;
         setCurrentRide(ride);
         const mapped = mapApiRideStatusToUi(ride.status);
-        setRideStatus((prev) => maxRiderUiPhase(prev, mapped));
+        if (RIDER_REQUEST_DEBUG) {
+          console.log('[useRideStatusSync] rider phase sync', {
+            currentRideStatus: ride.status,
+            mappedRiderUiPhase: mapped,
+            previousUiRideStatus: rideStatus,
+          });
+        }
+        setRideStatus(mapped);
       } catch {
+        if (RIDER_REQUEST_DEBUG) {
+          console.log('[useRideStatusSync] rider poll failed', {
+            rideId: id,
+            currentRideId: rideIdRef.current,
+            uiRideStatus: rideStatus,
+          });
+        }
         // Avoid snapping back to vehicle selection: real API may 404 briefly before the ride is
         // queryable; transient errors should not reset an active trip. Keep UI until a successful poll.
-        const phase = rideStatusRef.current;
-        if (
-          rideIdRef.current &&
-          phase !== 'idle' &&
-          phase !== 'completed'
-        ) {
-          return;
-        }
-        lastPolledRideRef.current = null;
-        setCurrentRide(null);
-        setRideStatus('idle');
+        // Use functional setRideStatus so we read the real React phase (not a ref that can lag one
+        // frame behind submit), otherwise a failed poll can spuriously reset to idle during searching.
+        setRideStatus((prev) => {
+          if (prev !== 'idle' && prev !== 'completed') {
+            return prev;
+          }
+          lastPolledRideRef.current = null;
+          setCurrentRide(null);
+          return 'idle';
+        });
       }
     },
     RIDER_POLL_MS,

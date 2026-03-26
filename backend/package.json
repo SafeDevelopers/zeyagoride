@@ -5,13 +5,16 @@
   "scripts": {
     "start": "nest start",
     "start:dev": "nest start --watch",
-    "build": "prisma generate && nest build",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "prisma db seed"
+    "build": "dotenv -e ../.env -e .env -- prisma generate && nest build",
+    "prisma:generate": "dotenv -e ../.env -e .env -- prisma generate",
+    "prisma:migrate": "dotenv -e ../.env -e .env -- prisma migrate dev",
+    "prisma:migrate:deploy": "dotenv -e ../.env -e .env -- prisma migrate deploy",
+    "prisma:seed": "dotenv -e ../.env -e .env -- prisma db seed"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1017.0",
     "@nestjs/common": "^10.4.15",
+    "@nestjs/config": "^4.0.3",
     "@nestjs/core": "^10.4.15",
     "@nestjs/platform-express": "^10.4.15",
     "@nestjs/platform-socket.io": "^10.4.15",
@@ -26,12 +29,14 @@
   "devDependencies": {
     "@nestjs/cli": "^10.4.9",
     "@prisma/client": "6.19.0",
+    "@types/multer": "^2.1.0",
     "@types/node": "^20.17.10",
+    "dotenv-cli": "^11.0.0",
     "prisma": "6.19.0",
     "tsx": "^4.21.0",
     "typescript": "^5.7.2"
   },
   "prisma": {
-    "seed": "tsx prisma/seed.ts"
+    "seed": "dotenv -e ../.env -e .env -- tsx prisma/seed.ts"
   }
 }

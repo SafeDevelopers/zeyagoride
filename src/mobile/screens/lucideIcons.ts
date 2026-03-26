@@ -68,4 +68,8 @@ export {
   Settings2,
   Zap,
   Lock,
+  ExternalLink,
+  Loader2,
+  Upload,
+  Image as ImageIcon,
 } from 'lucide-react';

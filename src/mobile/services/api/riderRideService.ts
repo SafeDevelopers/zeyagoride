@@ -2,6 +2,7 @@ import type {
   CancelRideRequest,
   CancelRideResponse,
   GetRideResponse,
+  ListRiderNotificationsResponse,
   RequestRideRequest,
   RequestRideResponse,
   RideSummary,
@@ -151,3 +152,11 @@ function createRiderRideApiServiceWithDevFallback(): RiderRideService {
 export const riderRideService: RiderRideService = USE_MOCK_API
   ? mockRiderRideService
   : createRiderRideApiServiceWithDevFallback();
+
+/** Backend persisted rider inbox (optional; UI may keep using local ride events until wired). */
+export async function fetchRiderNotifications(): Promise<ListRiderNotificationsResponse> {
+  if (USE_MOCK_API) {
+    return { notifications: [] };
+  }
+  return request<ListRiderNotificationsResponse>('GET', endpoints.rider.notifications());
+}

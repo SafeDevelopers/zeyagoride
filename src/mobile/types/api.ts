@@ -9,6 +9,7 @@ import type { FareEstimate } from './route';
 /** Backend auth — request OTP to the given phone (E.164 or normalized digits per API contract). */
 export type LoginWithPhoneRequest = {
   phone: string;
+  role?: SessionUserRole;
 };
 
 /** Backend auth — OTP send acknowledged. */
@@ -23,12 +24,17 @@ export type SessionUser = {
   id: string;
   phone: string;
   name: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  address: string;
   role: SessionUserRole;
 };
 
 export type VerifyOtpRequest = {
   phone: string;
   code: string;
+  role?: SessionUserRole;
 };
 
 /** Tokens + user + session boundary time (ISO 8601). */
@@ -38,6 +44,58 @@ export type VerifyOtpResponse = {
   user: SessionUser;
   /** Access token expiry (ISO 8601). */
   expiresAt: string;
+  registrationRequired: boolean;
+  authFlow: 'login' | 'register';
+};
+
+export type RegisterRiderRequest = {
+  firstName: string;
+  lastName: string;
+  email: string;
+  address: string;
+};
+
+export type RegisterDriverRequest = {
+  firstName: string;
+  lastName: string;
+  email: string;
+  address: string;
+  make: string;
+  model: string;
+  color: string;
+  capacity: number;
+  tagNumber: string;
+  insuranceExpiry?: string;
+};
+
+export type DriverVehicleUpdateRequest = {
+  make: string;
+  model: string;
+  color: string;
+  capacity: number;
+  tagNumber: string;
+  insuranceExpiry?: string;
+};
+
+export type UpdateProfileRequest = {
+  firstName: string;
+  lastName: string;
+  email: string;
+  address: string;
+};
+
+export type VehicleApprovalStatus = 'pending' | 'approved' | 'rejected';
+
+export type DriverVehicleProfile = {
+  id: string;
+  make: string;
+  model: string;
+  color: string;
+  capacity: number;
+  tagNumber: string;
+  insuranceExpiry: string | null;
+  status: VehicleApprovalStatus;
+  rejectionReason: string | null;
 };
 
 /** Vehicle category for pricing / matching (aligned with UI `SelectedVehicleId`). */
@@ -52,6 +110,17 @@ export type RideStatus =
   | 'in_progress'
   | 'completed'
   | 'cancelled';
+
+export type PaymentStatus =
+  | 'unpaid'
+  | 'pending'
+  | 'authorized'
+  | 'paid'
+  | 'failed'
+  | 'refunded';
+
+/** Recorded when driver completes trip (cash-first; aligns with Prisma `RidePaymentMethod`). */
+export type RidePaymentMethod = 'cash' | 'bank' | 'telebirr';
 
 /** WGS84 coordinates — Mapbox / Directions API compatible. */
 export type LatLng = {
@@ -87,7 +156,14 @@ export type RideSummary = {
   /** Preview / confirmed route metrics when provided by client or API. */
   distanceMeters?: number;
   durationSeconds?: number;
+  originalFare?: number;
+  discountAmount?: number;
+  finalFare?: number;
+  promoCode?: string | null;
+  paymentStatus?: PaymentStatus;
+  paymentId?: string | null;
   fareEstimate?: FareEstimate;
+  paymentMethod?: RidePaymentMethod;
 };
 
 export type RequestRideRequest = {
@@ -106,6 +182,7 @@ export type RequestRideRequest = {
   distanceMeters?: number;
   durationSeconds?: number;
   fareEstimate?: FareEstimate;
+  promoCode?: string;
 };
 
 export type RequestRideResponse = {
@@ -128,6 +205,92 @@ export type DriverAvailabilityRequest = {
 
 export type DriverAvailabilityResponse = {
   online: boolean;
+};
+
+export type DriverProfile = {
+  id: string;
+  userId: string;
+  name: string | null;
+  phone: string | null;
+  online: boolean;
+  isVerified: boolean;
+  verificationStatus: string;
+  vehicle: DriverVehicleProfile | null;
+  canGoOnline: boolean;
+  onlineBlockingReasons: string[];
+  activeTripCount: number;
+  walletBalance: number;
+  walletMinBalance: number;
+  walletWarningThreshold: number;
+  walletBlocked: boolean;
+  walletBelowWarning: boolean;
+};
+
+export type DriverWalletSnapshot = {
+  balance: number;
+  minBalance: number;
+  warningThreshold: number;
+  blocked: boolean;
+  belowWarning: boolean;
+};
+
+export type DriverWalletTransactionRow = {
+  id: string;
+  type: string;
+  amount: number;
+  reason: string;
+  rideId: string | null;
+  metadata?: Record<string, unknown> | null;
+  createdAt: string;
+};
+
+export type DriverNotificationRow = {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  data: Record<string, unknown> | null;
+  read: boolean;
+  createdAt: string;
+};
+
+export type ListDriverNotificationsResponse = {
+  notifications: DriverNotificationRow[];
+};
+
+/** Persisted rider in-app rows; same shape as driver notifications for easy merging later. */
+export type RiderNotificationRow = DriverNotificationRow;
+
+export type ListRiderNotificationsResponse = {
+  notifications: RiderNotificationRow[];
+};
+
+export type DriverTopUpRequestRow = {
+  id: string;
+  amount: number;
+  method: string;
+  reference: string;
+  status: string;
+  createdAt: string;
+  proofUrl: string | null;
+};
+
+export type ListDriverTopUpRequestsResponse = {
+  requests: DriverTopUpRequestRow[];
+};
+
+export type ListDriverWalletTransactionsResponse = {
+  transactions: DriverWalletTransactionRow[];
+};
+
+export type SubmitTopUpRequest = {
+  amount: number;
+  method: 'telebirr' | 'bank' | 'cash';
+  reference: string;
+};
+
+export type CompleteTripBody = {
+  paymentMethod?: RidePaymentMethod;
 };
 
 export type AcceptRideRequest = {

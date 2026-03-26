@@ -68,4 +68,8 @@ export class RequestRideDto {
   @ValidateNested()
   @Type(() => FareEstimateDto)
   fareEstimate?: FareEstimateDto;
+
+  @IsOptional()
+  @IsString()
+  promoCode?: string;
 }

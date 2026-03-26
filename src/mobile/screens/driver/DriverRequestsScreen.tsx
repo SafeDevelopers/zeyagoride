@@ -3,6 +3,7 @@ import { useMobileApp } from '../../context/MobileAppContext';
 import { driverRideService } from '../../services/api';
 
 export function DriverRequestsScreen() {
+  const REQUEST_TIMER_CIRCUMFERENCE = 176;
   const {
     setRideStatus,
     setCurrentRide,
@@ -23,7 +24,7 @@ export function DriverRequestsScreen() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 z-[60] flex flex-col items-stretch justify-end bg-black/60 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom,0px))] pt-4"
+            className="pointer-events-auto absolute inset-0 z-[60] flex flex-col items-stretch justify-end bg-black/60 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom,0px))] pt-4"
           >
             <motion.div
               initial={{ y: '100%' }}
@@ -61,8 +62,9 @@ export function DriverRequestsScreen() {
                       stroke="currentColor"
                       strokeWidth="4"
                       fill="transparent"
-                      strokeDasharray="176"
-                      animate={{ strokeDashoffset: 176 }}
+                      strokeDasharray={REQUEST_TIMER_CIRCUMFERENCE}
+                      initial={{ strokeDashoffset: 0 }}
+                      animate={{ strokeDashoffset: REQUEST_TIMER_CIRCUMFERENCE }}
                       transition={{ duration: 15, ease: 'linear' }}
                       className="text-velox-accent"
                     />

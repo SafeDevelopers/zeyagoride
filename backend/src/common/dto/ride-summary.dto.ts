@@ -13,6 +13,7 @@ import { ProfileType } from '../enums/profile-type.enum';
 import { FareEstimateDto } from './fare-estimate.dto';
 import { LatLngDto } from './lat-lng.dto';
 import { RideStopDto } from './ride-stop.dto';
+import { PaymentStatus, RidePaymentMethod } from '@prisma/client';
 
 /** Matches mobile `RideSummary`. */
 export class RideSummaryDto {
@@ -88,7 +89,35 @@ export class RideSummaryDto {
   durationSeconds?: number;
 
   @IsOptional()
+  @IsNumber()
+  originalFare?: number;
+
+  @IsOptional()
+  @IsNumber()
+  discountAmount?: number;
+
+  @IsOptional()
+  @IsNumber()
+  finalFare?: number;
+
+  @IsOptional()
+  @IsString()
+  promoCode?: string | null;
+
+  @IsOptional()
+  @IsEnum(PaymentStatus)
+  paymentStatus?: PaymentStatus;
+
+  @IsOptional()
+  @IsString()
+  paymentId?: string | null;
+
+  @IsOptional()
   @ValidateNested()
   @Type(() => FareEstimateDto)
   fareEstimate?: FareEstimateDto;
+
+  @IsOptional()
+  @IsEnum(RidePaymentMethod)
+  paymentMethod?: RidePaymentMethod;
 }

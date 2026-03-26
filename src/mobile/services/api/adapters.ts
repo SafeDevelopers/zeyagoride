@@ -13,7 +13,9 @@ import type {
   LatLng,
   ListDriverRequestsResponse,
   LoginWithPhoneResponse,
+  PaymentStatus,
   RequestRideRequest,
+  RidePaymentMethod,
   RideStatus,
   RideStop,
   RideSummary,
@@ -50,7 +52,15 @@ function parseFareEstimate(raw: unknown): FareEstimate | undefined {
   const amount = optNum(raw.amount);
   const formatted = str(raw.formatted, '');
   if (amount === undefined || !formatted) return undefined;
-  return { currency: 'ETB', amount: Math.round(amount), formatted };
+  return {
+    currency: 'ETB',
+    amount: Math.round(amount),
+    formatted,
+    originalFare: optNum(raw.originalFare ?? raw.original_fare),
+    discountAmount: optNum(raw.discountAmount ?? raw.discount_amount),
+    finalFare: optNum(raw.finalFare ?? raw.final_fare),
+    promoCode: str(raw.promoCode ?? raw.promo_code, ''),
+  };
 }
 
 function parseLatLng(raw: unknown): LatLng | null {
@@ -74,6 +84,25 @@ function parseRideStatus(raw: unknown): RideStatus {
     'cancelled',
   ];
   return (allowed.includes(s as RideStatus) ? s : 'matching') as RideStatus;
+}
+
+function parsePaymentStatus(raw: unknown): PaymentStatus | undefined {
+  const s = str(raw, '');
+  const allowed: PaymentStatus[] = [
+    'unpaid',
+    'pending',
+    'authorized',
+    'paid',
+    'failed',
+    'refunded',
+  ];
+  return allowed.includes(s as PaymentStatus) ? (s as PaymentStatus) : undefined;
+}
+
+function parseRidePaymentMethod(raw: unknown): RidePaymentMethod | undefined {
+  const s = str(raw, '');
+  const allowed: RidePaymentMethod[] = ['cash', 'bank', 'telebirr'];
+  return allowed.includes(s as RidePaymentMethod) ? (s as RidePaymentMethod) : undefined;
 }
 
 function parseRideStop(raw: unknown): RideStop {
@@ -112,6 +141,10 @@ export function adaptVerifyOtpResponse(raw: unknown): VerifyOtpResponse {
     id: str(userRaw.id ?? userRaw.userId, 'unknown'),
     phone: str(userRaw.phone ?? userRaw.phoneNumber, ''),
     name: str(userRaw.name ?? userRaw.displayName, 'User'),
+    firstName: str(userRaw.firstName ?? userRaw.first_name, ''),
+    lastName: str(userRaw.lastName ?? userRaw.last_name, ''),
+    email: str(userRaw.email, ''),
+    address: str(userRaw.address, ''),
     role,
   };
   if (!accessToken || !expiresAt) {
@@ -122,6 +155,11 @@ export function adaptVerifyOtpResponse(raw: unknown): VerifyOtpResponse {
     refreshToken,
     user,
     expiresAt,
+    registrationRequired: Boolean(raw.registrationRequired ?? raw.registration_required),
+    authFlow:
+      str(raw.authFlow ?? raw.auth_flow, '').toLowerCase() === 'register'
+        ? 'register'
+        : 'login',
   };
 }
 
@@ -178,7 +216,14 @@ export function adaptRideSummary(raw: unknown): RideSummary {
       raw.updatedAt !== undefined ? str(raw.updatedAt) : raw.updated_at !== undefined ? str(raw.updated_at) : undefined,
     distanceMeters: optNum(raw.distanceMeters ?? raw.distance_meters),
     durationSeconds: optNum(raw.durationSeconds ?? raw.duration_seconds),
+    originalFare: optNum(raw.originalFare ?? raw.original_fare),
+    discountAmount: optNum(raw.discountAmount ?? raw.discount_amount),
+    finalFare: optNum(raw.finalFare ?? raw.final_fare),
+    promoCode: nullableStr(raw.promoCode ?? raw.promo_code),
+    paymentStatus: parsePaymentStatus(raw.paymentStatus ?? raw.payment_status),
+    paymentId: nullableStr(raw.paymentId ?? raw.payment_id),
     fareEstimate: parseFareEstimate(raw.fareEstimate ?? raw.fare_estimate),
+    paymentMethod: parseRidePaymentMethod(raw.paymentMethod ?? raw.payment_method),
   };
 }
 
@@ -285,6 +330,7 @@ export type BuildRequestRideEstimateOptions = {
   distanceMeters?: number;
   durationSeconds?: number;
   fareEstimate?: FareEstimate;
+  promoCode?: string;
 };
 
 /** Build `RequestRideRequest` from current UI strings plus optional coordinates. */
@@ -322,5 +368,6 @@ export function buildRequestRideRequest(
     distanceMeters: estimate?.distanceMeters,
     durationSeconds: estimate?.durationSeconds,
     fareEstimate: estimate?.fareEstimate,
+    promoCode: estimate?.promoCode,
   };
 }

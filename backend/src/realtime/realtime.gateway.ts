@@ -6,6 +6,7 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { AuthService } from '../auth/auth.service';
 import {
   DRIVER_REQUEST_EVENT,
   DRIVER_REQUESTS_CHANNEL,
@@ -26,15 +27,26 @@ import {
 export class RealtimeGateway implements OnGatewayConnection {
   private readonly logger = new Logger(RealtimeGateway.name);
 
+  constructor(private readonly authService: AuthService) {}
+
   @WebSocketServer()
   server!: Server;
 
-  handleConnection(client: Socket) {
+  async handleConnection(client: Socket) {
     const token =
       (client.handshake.auth as { token?: string } | undefined)?.token ??
       (client.handshake.query?.token as string | undefined);
-    void token;
-    // TODO: verify JWT; reject connection if invalid (keep mock-lenient for local dev).
+    if (!token) {
+      client.disconnect(true);
+      return;
+    }
+    try {
+      const user = await this.authService.authenticateAccessToken(token);
+      client.data.user = { id: user.id, role: user.role, sessionId: user.sessionId };
+    } catch {
+      client.disconnect(true);
+      return;
+    }
     this.logger.debug(`Client connected: ${client.id}`);
   }
 
